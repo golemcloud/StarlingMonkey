@@ -270,11 +270,6 @@ bool RequestOrResponse::body_unusable(JSContext *cx, JS::HandleObject body) {
  * Implementation of the `extract a body` algorithm at
  * https://fetch.spec.whatwg.org/#concept-bodyinit-extract
  *
- * Note: our implementation is somewhat different from what the spec describes
- * in that we immediately write all non-streaming body types to the host instead
- * of creating a stream for them. We don't have threads, so there's nothing "in
- * parallel" to be had anyway.
- *
  * Note: also includes the steps applying the `Content-Type` header from the
  * Request and Response constructors in step 36 and 8 of those, respectively.
  */
@@ -285,6 +280,7 @@ bool RequestOrResponse::extract_body(JSContext *cx, JS::HandleObject self,
   MOZ_ASSERT(!body_val.isNullOrUndefined());
 
   const char *content_type = nullptr;
+  mozilla::Maybe<size_t> content_length;
 
   // We currently support five types of body inputs:
   // - byte sequence
@@ -386,7 +382,6 @@ bool RequestOrResponse::extract_body(JSContext *cx, JS::HandleObject self,
     MOZ_ASSERT(ReadableStreamIsDisturbed(cx, body_stream, &disturbed));
     MOZ_ASSERT(!disturbed);
 
-
     if (!ReadableStreamEnqueue(cx, body_stream, chunk) ||
         !ReadableStreamClose(cx, body_stream)) {
       return false;
@@ -394,15 +389,24 @@ bool RequestOrResponse::extract_body(JSContext *cx, JS::HandleObject self,
 
     JS_SetReservedSlot(self, static_cast<uint32_t>(Slots::BodyStream),
                        ObjectValue(*body_stream));
+    content_length.emplace(length);
   }
 
-  // Step 36.3 of Request constructor / 8.4 of Response constructor.
-  if (content_type) {
+  if (content_type || content_length.isSome()) {
     JS::RootedObject headers(cx, RequestOrResponse::headers(cx, self));
     if (!headers) {
       return false;
     }
-    if (!Headers::set_if_undefined(cx, headers, "content-type", content_type)) {
+
+    if (content_length.isSome()) {
+      auto length_str = std::to_string(content_length.value());
+      if (!Headers::set_if_undefined(cx, headers, "content-length", length_str)) {
+        return false;
+      }
+    }
+
+    // Step 36.3 of Request constructor / 8.4 of Response constructor.
+    if (content_type && !Headers::set_if_undefined(cx, headers, "content-type", content_type)) {
       return false;
     }
   }
@@ -433,12 +437,42 @@ unique_ptr<host_api::HttpHeaders> RequestOrResponse::headers_clone(JSContext* cx
   return unique_ptr<host_api::HttpHeaders>(res.unwrap()->clone());
 }
 
+bool finish_outgoing_body_streaming(JSContext* cx, HandleObject body_owner) {
+  // The only response we ever send is the one passed to
+  // `FetchEvent#respondWith` to send to the client. As such, we can be
+  // certain that if we have a response here, we can advance the FetchState to
+  // `responseDone`.
+  // TODO(TS): factor this out to remove dependency on fetch-event.h
+  auto body = RequestOrResponse::outgoing_body_handle(body_owner);
+  auto res = body->close();
+  if (auto *err = res.to_err()) {
+    HANDLE_ERROR(cx, *err);
+    return false;
+  }
+
+  if (Response::is_instance(body_owner)) {
+    fetch_event::FetchEvent::set_state(fetch_event::FetchEvent::instance(),
+                                       fetch_event::FetchEvent::State::responseDone);
+  }
+
+  if (Request::is_instance(body_owner)) {
+    auto pending_handle = static_cast<host_api::FutureHttpIncomingResponse *>(
+        GetReservedSlot(body_owner, static_cast<uint32_t>(Request::Slots::PendingResponseHandle))
+            .toPrivate());
+    SetReservedSlot(body_owner, static_cast<uint32_t>(Request::Slots::PendingResponseHandle),
+                    PrivateValue(nullptr));
+    ENGINE->queue_async_task(new ResponseFutureTask(body_owner, pending_handle));
+  }
+
+  return true;
+}
+
 bool RequestOrResponse::append_body(JSContext *cx, JS::HandleObject self, JS::HandleObject source) {
   MOZ_ASSERT(!body_used(source));
   MOZ_ASSERT(!body_used(self));
   host_api::HttpIncomingBody *source_body = incoming_body_handle(source);
   host_api::HttpOutgoingBody *dest_body = outgoing_body_handle(self);
-  auto res = dest_body->append(ENGINE, source_body);
+  auto res = dest_body->append(ENGINE, source_body, finish_outgoing_body_streaming, self);
   if (auto *err = res.to_err()) {
     HANDLE_ERROR(cx, *err);
     return false;
@@ -893,14 +927,14 @@ bool RequestOrResponse::body_source_cancel_algorithm(JSContext *cx, JS::CallArgs
   return true;
 }
 
-bool RequestOrResponse::body_reader_then_handler(JSContext *cx, JS::HandleObject body_owner,
-                                                 JS::HandleValue extra, JS::CallArgs args) {
+bool reader_for_outgoing_body_then_handler(JSContext *cx, JS::HandleObject body_owner,
+                                           JS::HandleValue extra, JS::CallArgs args) {
+  ENGINE->dump_value(RequestOrResponse::url(body_owner));
   JS::RootedObject then_handler(cx, &args.callee());
   // The reader is stored in the catch handler, which we need here as well.
   // So we get that first, then the reader.
   JS::RootedObject catch_handler(cx, &extra.toObject());
   JS::RootedObject reader(cx, &js::GetFunctionNativeReserved(catch_handler, 1).toObject());
-  auto body = outgoing_body_handle(body_owner);
 
   // We're guaranteed to work with a native ReadableStreamDefaultReader here,
   // which in turn is guaranteed to vend {done: bool, value: any} objects to
@@ -911,23 +945,7 @@ bool RequestOrResponse::body_reader_then_handler(JSContext *cx, JS::HandleObject
     return false;
 
   if (done_val.toBoolean()) {
-    // The only response we ever send is the one passed to
-    // `FetchEvent#respondWith` to send to the client. As such, we can be
-    // certain that if we have a response here, we can advance the FetchState to
-    // `responseDone`.
-    // TODO(TS): factor this out to remove dependency on fetch-event.h
-    if (Response::is_instance(body_owner)) {
-      fetch_event::FetchEvent::set_state(fetch_event::FetchEvent::instance(),
-                                         fetch_event::FetchEvent::State::responseDone);
-    }
-
-    auto res = body->close();
-    if (auto *err = res.to_err()) {
-      HANDLE_ERROR(cx, *err);
-      return false;
-    }
-
-    return true;
+    return finish_outgoing_body_streaming(cx, body_owner);
   }
 
   JS::RootedValue val(cx);
@@ -939,16 +957,10 @@ bool RequestOrResponse::body_reader_then_handler(JSContext *cx, JS::HandleObject
     // reject the request promise
     if (Request::is_instance(body_owner)) {
       JS::RootedObject response_promise(cx, Request::response_promise(body_owner));
-      JS::RootedValue exn(cx);
 
       // TODO: this should be a TypeError, but I'm not sure how to make that work
       JS_ReportErrorUTF8(cx, "TypeError");
-      if (!JS_GetPendingException(cx, &exn)) {
-        return false;
-      }
-      JS_ClearPendingException(cx);
-
-      return JS::RejectPromise(cx, response_promise, exn);
+      return RejectPromiseWithPendingError(cx, response_promise);
     }
 
     // TODO: should we also create a rejected promise if a response reads something that's not a
@@ -967,6 +979,7 @@ bool RequestOrResponse::body_reader_then_handler(JSContext *cx, JS::HandleObject
     uint8_t *bytes = JS_GetUint8ArrayData(array, &is_shared, nogc);
     size_t length = JS_GetTypedArrayByteLength(array);
     // TODO: change this to write in chunks, respecting backpressure.
+    auto body = RequestOrResponse::outgoing_body_handle(body_owner);
     res = body->write_all(bytes, length);
   }
 
@@ -975,6 +988,7 @@ bool RequestOrResponse::body_reader_then_handler(JSContext *cx, JS::HandleObject
     HANDLE_ERROR(cx, *err);
     return false;
   }
+
 
   // Read the next chunk.
   JS::RootedObject promise(cx, JS::ReadableStreamDefaultReaderRead(cx, reader));
@@ -985,8 +999,8 @@ bool RequestOrResponse::body_reader_then_handler(JSContext *cx, JS::HandleObject
   return JS::AddPromiseReactions(cx, promise, then_handler, catch_handler);
 }
 
-bool RequestOrResponse::body_reader_catch_handler(JSContext *cx, JS::HandleObject body_owner,
-                                                  JS::HandleValue extra, JS::CallArgs args) {
+bool reader_for_outgoing_body_catch_handler(JSContext *cx, JS::HandleObject body_owner,
+                                            JS::HandleValue extra, JS::CallArgs args) {
   // TODO: check if this should create a rejected promise instead, so an
   // in-content handler for unhandled rejections could deal with it. The body
   // stream errored during the streaming send. Not much we can do, but at least
@@ -1037,8 +1051,6 @@ bool RequestOrResponse::maybe_stream_body(JSContext *cx, JS::HandleObject body_o
 
   // If the body stream is backed by an HTTP body handle, we can directly pipe
   // that handle into the body we're about to send.
-  // TODO: check if this case can still be hit. Given that we're not creating outgoing responses
-  // anymore until sending them, it probably can't.
   if (streams::NativeStreamSource::stream_is_body(cx, stream)) {
     MOZ_ASSERT(!is_incoming(body_owner));
     // First, directly append the source's body to the target's and lock the stream.
@@ -1066,13 +1078,13 @@ bool RequestOrResponse::maybe_stream_body(JSContext *cx, JS::HandleObject body_o
   // perform another operation in this way.
   JS::RootedObject catch_handler(cx);
   JS::RootedValue extra(cx, JS::ObjectValue(*reader));
-  catch_handler = create_internal_method<body_reader_catch_handler>(cx, body_owner, extra);
+  catch_handler = create_internal_method<reader_for_outgoing_body_catch_handler>(cx, body_owner, extra);
   if (!catch_handler)
     return false;
 
   JS::RootedObject then_handler(cx);
   extra.setObject(*catch_handler);
-  then_handler = create_internal_method<body_reader_then_handler>(cx, body_owner, extra);
+  then_handler = create_internal_method<reader_for_outgoing_body_then_handler>(cx, body_owner, extra);
   if (!then_handler)
     return false;
 
@@ -2468,16 +2480,6 @@ bool Response::constructor(JSContext *cx, unsigned argc, JS::Value *vp) {
   // be consumed by the content creating it, so we're lenient about its format.
 
   // 3.  Set `this`’s `response` to a new `response`.
-  // TODO(performance): consider not creating a host-side representation for responses
-  // eagerly. Some applications create Response objects purely for internal use,
-  // e.g. to represent cache entries. While that's perhaps not ideal to begin
-  // with, it exists, so we should handle it in a good way, and not be
-  // superfluously slow.
-  // https://github.com/fastly/js-compute-runtime/issues/219
-  // TODO(performance): enable creating Response objects during the init phase, and only
-  // creating the host-side representation when processing requests.
-  // https://github.com/fastly/js-compute-runtime/issues/220
-
   // 5. (Reordered) Set `this`’s `response`’s `status` to `init`["status"].
 
   // 7.  (Reordered) If `init`["headers"] `exists`, then `fill` `this`’s `headers` with

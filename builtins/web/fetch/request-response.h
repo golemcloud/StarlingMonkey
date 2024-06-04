@@ -91,11 +91,6 @@ public:
                                            JS::HandleValue reason);
   static bool body_source_pull_algorithm(JSContext *cx, JS::CallArgs args, JS::HandleObject source,
                                          JS::HandleObject body_owner, JS::HandleObject controller);
-  static bool body_reader_then_handler(JSContext *cx, JS::HandleObject body_owner,
-                                       JS::HandleValue extra, JS::CallArgs args);
-
-  static bool body_reader_catch_handler(JSContext *cx, JS::HandleObject body_owner,
-                                        JS::HandleValue extra, JS::CallArgs args);
 
   /**
    * Ensures that the given |body_owner|'s body is properly streamed, if it
@@ -139,6 +134,7 @@ public:
     URL = static_cast<int>(RequestOrResponse::Slots::URL),
     Method = static_cast<int>(RequestOrResponse::Slots::Count),
     ResponsePromise,
+    PendingResponseHandle,
     Count,
   };
 
@@ -215,6 +211,64 @@ public:
   static uint16_t status(JSObject *obj);
   static JSString *status_message(JSObject *obj);
   static void set_status_message_from_code(JSContext *cx, JSObject *obj, uint16_t code);
+};
+
+class ResponseFutureTask final : public api::AsyncTask {
+  Heap<JSObject *> request_;
+  host_api::FutureHttpIncomingResponse *future_;
+
+public:
+  explicit ResponseFutureTask(const HandleObject request,
+                              host_api::FutureHttpIncomingResponse *future)
+      : request_(request), future_(future) {
+    auto res = future->subscribe();
+    MOZ_ASSERT(!res.is_err(), "Subscribing to a future should never fail");
+    handle_ = res.unwrap();
+  }
+
+  [[nodiscard]] bool run(api::Engine *engine) override {
+    // MOZ_ASSERT(ready());
+    JSContext *cx = engine->cx();
+
+    const RootedObject request(cx, request_);
+    RootedObject response_promise(cx, Request::response_promise(request));
+
+    auto res = future_->maybe_response();
+    if (res.is_err()) {
+      JS_ReportErrorUTF8(cx, "NetworkError when attempting to fetch resource.");
+      return RejectPromiseWithPendingError(cx, response_promise);
+    }
+
+    auto maybe_response = res.unwrap();
+    MOZ_ASSERT(maybe_response.has_value());
+    auto response = maybe_response.value();
+    RootedObject response_obj(
+        cx, JS_NewObjectWithGivenProto(cx, &Response::class_, Response::proto_obj));
+    if (!response_obj) {
+      return false;
+    }
+
+    response_obj = Response::create_incoming(cx, response_obj, response);
+    if (!response_obj) {
+      return false;
+    }
+
+    RequestOrResponse::set_url(response_obj, RequestOrResponse::url(request));
+    RootedValue response_val(cx, ObjectValue(*response_obj));
+    if (!ResolvePromise(cx, response_promise, response_val)) {
+      return false;
+    }
+
+    return cancel(engine);
+  }
+
+  [[nodiscard]] bool cancel(api::Engine *engine) override {
+    // TODO(TS): implement
+    handle_ = -1;
+    return true;
+  }
+
+  void trace(JSTracer *trc) override { TraceEdge(trc, &request_, "Request for response future"); }
 };
 
 } // namespace fetch
