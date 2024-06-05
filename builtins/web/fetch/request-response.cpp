@@ -945,7 +945,28 @@ bool reader_for_outgoing_body_then_handler(JSContext *cx, JS::HandleObject body_
     return false;
 
   if (done_val.toBoolean()) {
-    return finish_outgoing_body_streaming(cx, body_owner);
+    // The only response we ever send is the one passed to
+    // `FetchEvent#respondWith` to send to the client. As such, we can be
+    // certain that if we have a response here, we can advance the FetchState to
+    // `responseDone`.
+    // TODO(TS): factor this out to remove dependency on fetch-event.h
+    if (Response::is_instance(body_owner)) {
+      ENGINE->decr_event_loop_interest();
+      fetch_event::FetchEvent::set_state(fetch_event::FetchEvent::instance(),
+                                         fetch_event::FetchEvent::State::responseDone);
+    }
+
+    auto res = body->close();
+    if (auto *err = res.to_err()) {
+      HANDLE_ERROR(cx, *err);
+      return false;
+    }
+
+    if (Request::is_instance(body_owner)) {
+      ENGINE->queue_async_task(new BodyFutureTask(body_owner));
+    }
+
+    return true;
   }
 
   JS::RootedValue val(cx);
@@ -1015,9 +1036,10 @@ bool reader_for_outgoing_body_catch_handler(JSContext *cx, JS::HandleObject body
   // `responseDone` is the right state: `respondedWithError` is for when sending
   // a response at all failed.)
   // TODO(TS): investigate why this is disabled.
-  // if (Response::is_instance(body_owner)) {
-  //   FetchEvent::set_state(FetchEvent::instance(), FetchEvent::State::responseDone);
-  // }
+  if (Response::is_instance(body_owner)) {
+    ENGINE->decr_event_loop_interest();
+    //   FetchEvent::set_state(FetchEvent::instance(), FetchEvent::State::responseDone);
+  }
   return true;
 }
 

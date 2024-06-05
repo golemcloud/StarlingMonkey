@@ -30,6 +30,9 @@ void inc_pending_promise_count(JSObject *self) {
   auto count =
       JS::GetReservedSlot(self, static_cast<uint32_t>(FetchEvent::Slots::PendingPromiseCount))
           .toInt32();
+  if (count == 0) {
+    ENGINE->incr_event_loop_interest();
+  }
   count++;
   MOZ_ASSERT(count > 0);
   JS::SetReservedSlot(self, static_cast<uint32_t>(FetchEvent::Slots::PendingPromiseCount),
@@ -43,8 +46,9 @@ void dec_pending_promise_count(JSObject *self) {
           .toInt32();
   MOZ_ASSERT(count > 0);
   count--;
-  if (count == 0)
+  if (count == 0) {
     ENGINE->decr_event_loop_interest();
+  }
   JS::SetReservedSlot(self, static_cast<uint32_t>(FetchEvent::Slots::PendingPromiseCount),
                       JS::Int32Value(count));
 }
@@ -202,6 +206,10 @@ bool start_response(JSContext *cx, JS::HandleObject response_obj, bool streaming
 
   if (streaming && response->has_body()) {
     STREAMING_BODY = response->body().unwrap();
+  }
+
+  if (streaming) {
+    ENGINE->incr_event_loop_interest();
   }
 
   return send_response(response, FetchEvent::instance(),
@@ -430,11 +438,13 @@ bool FetchEvent::is_dispatching(JSObject *self) {
 
 void FetchEvent::start_dispatching(JSObject *self) {
   MOZ_ASSERT(!is_dispatching(self));
+  ENGINE->incr_event_loop_interest();
   JS::SetReservedSlot(self, static_cast<uint32_t>(Slots::Dispatch), JS::TrueValue());
 }
 
 void FetchEvent::stop_dispatching(JSObject *self) {
   MOZ_ASSERT(is_dispatching(self));
+  ENGINE->decr_event_loop_interest();
   JS::SetReservedSlot(self, static_cast<uint32_t>(Slots::Dispatch), JS::FalseValue());
 }
 
@@ -638,3 +648,74 @@ bool install(api::Engine *engine) {
 }
 
 } // namespace builtins::web::fetch::fetch_event
+
+// #define S_TO_NS(s) ((s) * 1000000000)
+// static int64_t now_ns() {
+//   timespec now{};
+//   clock_gettime(CLOCK_MONOTONIC, &now);
+//   return S_TO_NS(now.tv_sec) + now.tv_nsec;
+// }
+using namespace builtins::web::fetch::fetch_event;
+// TODO: change this to fully work in terms of host_api.
+void exports_wasi_http_incoming_handler(exports_wasi_http_incoming_request request_handle,
+                                        exports_wasi_http_response_outparam response_out) {
+
+  // auto begin = now_ns();
+  // auto id1 = host_api::MonotonicClock::subscribe(begin + 1, true);
+  // auto id2 = host_api::MonotonicClock::subscribe(begin + 1000000*1000, true);
+  // bindings_borrow_pollable_t handles[2] = {bindings_borrow_pollable_t{id2},
+  // bindings_borrow_pollable_t{id1}}; auto list = bindings_list_borrow_pollable_t{handles, 2};
+  // bindings_list_u32_t res = {.ptr = nullptr,.len = 0};
+  // wasi_io_0_2_0_rc_2023_10_18_poll_poll_list(&list, &res);
+  // fprintf(stderr, "first ready after first poll: %d. diff: %lld\n", handles[res.ptr[0]].__handle,
+  // (now_ns() - begin) / 1000);
+  //
+  // wasi_io_0_2_0_rc_2023_10_18_poll_pollable_drop_own(bindings_own_pollable_t{id1});
+  //
+  // bindings_borrow_pollable_t handles2[1] = {bindings_borrow_pollable_t{id2}};
+  // list = bindings_list_borrow_pollable_t{handles2, 1};
+  // wasi_io_0_2_0_rc_2023_10_18_poll_poll_list(&list, &res);
+  // fprintf(stderr, "first ready after second poll: %d. diff: %lld\n",
+  // handles2[res.ptr[0]].__handle, (now_ns() - begin) / 1000);
+  //
+  // return;
+
+  RESPONSE_OUT = response_out.__handle;
+
+  auto *request = new host_api::HttpIncomingRequest(request_handle.__handle);
+  HandleObject fetch_event = FetchEvent::instance();
+  MOZ_ASSERT(FetchEvent::is_instance(fetch_event));
+  if (!FetchEvent::init_incoming_request(ENGINE->cx(), fetch_event, request)) {
+    ENGINE->dump_pending_exception("initialization of FetchEvent");
+    return;
+  }
+
+  double total_compute = 0;
+
+  dispatch_fetch_event(fetch_event, &total_compute);
+
+  bool success = ENGINE->run_event_loop();
+
+  if (JS_IsExceptionPending(ENGINE->cx())) {
+    ENGINE->dump_pending_exception("evaluating incoming request");
+  }
+
+  if (!success) {
+    fprintf(stderr, "Internal error.");
+  }
+
+  if (ENGINE->debug_logging_enabled() && ENGINE->has_pending_async_tasks()) {
+    fprintf(stderr, "Event loop terminated with async tasks pending. "
+                    "Use FetchEvent#waitUntil to extend the component's "
+                    "lifetime if needed.\n");
+  }
+
+  if (!FetchEvent::response_started(fetch_event)) {
+    FetchEvent::respondWithError(ENGINE->cx(), fetch_event);
+    return;
+  }
+
+  if (STREAMING_BODY && STREAMING_BODY->valid()) {
+    STREAMING_BODY->close();
+  }
+}
