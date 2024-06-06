@@ -301,10 +301,10 @@ auto string_view_to_world_string = from_string_view<bindings_string_t>;
 
 HostString scheme_to_string(const wasi_http_0_2_0_types_scheme_t &scheme) {
   if (scheme.tag == WASI_HTTP_0_2_0_TYPES_SCHEME_HTTP) {
-    return {"http:"};
+    return {"http"};
   }
   if (scheme.tag == WASI_HTTP_0_2_0_TYPES_SCHEME_HTTPS) {
-    return {"https:"};
+    return {"https"};
   }
   return to_host_string(scheme.val.other);
 }
@@ -522,6 +522,7 @@ string_view HttpRequestResponseBase::url() {
 
   HostString scheme_str = scheme_to_string(scheme);
   _url = new std::string(scheme_str.ptr.release(), scheme_str.len);
+  _url->append("://");
   _url->append(string_view(bindings_string_to_host_string(authority)));
   _url->append(string_view(bindings_string_to_host_string(path)));
 
@@ -763,8 +764,11 @@ Result<Void> HttpOutgoingBody::close() {
   {
     wasi_io_0_2_0_streams_stream_error_t err;
     bool success = wasi_io_0_2_0_streams_method_output_stream_blocking_flush(borrow, &err);
-    MOZ_RELEASE_ASSERT(success);
-    // TODO: handle `err`
+    if (!success) {
+      // TODO: validate that this condition applies if `content-length` bytes were written, and
+      //  the host has auto-closed the body.
+      MOZ_RELEASE_ASSERT(err.tag == WASI_IO_0_2_0_STREAMS_STREAM_ERROR_CLOSED);
+    }
   }
 
   if (state->pollable_handle_ != INVALID_POLLABLE_HANDLE) {

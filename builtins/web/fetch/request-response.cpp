@@ -929,7 +929,6 @@ bool RequestOrResponse::body_source_cancel_algorithm(JSContext *cx, JS::CallArgs
 
 bool reader_for_outgoing_body_then_handler(JSContext *cx, JS::HandleObject body_owner,
                                            JS::HandleValue extra, JS::CallArgs args) {
-  ENGINE->dump_value(RequestOrResponse::url(body_owner));
   JS::RootedObject then_handler(cx, &args.callee());
   // The reader is stored in the catch handler, which we need here as well.
   // So we get that first, then the reader.
@@ -945,6 +944,7 @@ bool reader_for_outgoing_body_then_handler(JSContext *cx, JS::HandleObject body_
     return false;
 
   if (done_val.toBoolean()) {
+    fetch_event::FetchEvent::decrease_interest();
     return finish_outgoing_body_streaming(cx, body_owner);
   }
 
@@ -1001,6 +1001,8 @@ bool reader_for_outgoing_body_then_handler(JSContext *cx, JS::HandleObject body_
 
 bool reader_for_outgoing_body_catch_handler(JSContext *cx, JS::HandleObject body_owner,
                                             JS::HandleValue extra, JS::CallArgs args) {
+  fetch_event::FetchEvent::decrease_interest();
+
   // TODO: check if this should create a rejected promise instead, so an
   // in-content handler for unhandled rejections could deal with it. The body
   // stream errored during the streaming send. Not much we can do, but at least
@@ -1015,11 +1017,10 @@ bool reader_for_outgoing_body_catch_handler(JSContext *cx, JS::HandleObject body
   // `responseDone` is the right state: `respondedWithError` is for when sending
   // a response at all failed.)
   // TODO(TS): investigate why this is disabled.
-  if (Response::is_instance(body_owner)) {
-    ENGINE->decr_event_loop_interest();
-    //   FetchEvent::set_state(FetchEvent::instance(), FetchEvent::State::responseDone);
-  }
-  return true;
+  // if (Response::is_instance(body_owner)) {
+  //   FetchEvent::set_state(FetchEvent::instance(), FetchEvent::State::responseDone);
+  // }
+  return finish_outgoing_body_streaming(cx, body_owner);
 }
 
 bool RequestOrResponse::maybe_stream_body(JSContext *cx, JS::HandleObject body_owner,
@@ -1094,6 +1095,8 @@ bool RequestOrResponse::maybe_stream_body(JSContext *cx, JS::HandleObject body_o
     return false;
   if (!JS::AddPromiseReactions(cx, promise, then_handler, catch_handler))
     return false;
+
+  fetch_event::FetchEvent::increase_interest();
 
   *requires_streaming = true;
   return true;
