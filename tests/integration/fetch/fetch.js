@@ -19,10 +19,9 @@ export const handler = serveTest(async (t) => {
 
 function testGetJsonArray(url, length) {
     let result = syncGetJson(url);
-    console.log("result:")
-    console.log(result);
+    console.log(`result json size: ${JSON.stringify(result).length}`);
     assert(result != null, "result is not nullish");
-    assert(result["length"] === length, "length == " + length);
+    assert(result["length"] === length, `length == ${length}`);
 }
 
 async function asyncGetJson(url) {
@@ -52,7 +51,10 @@ function asyncToSync(promise) {
             done = true;
         });
 
-    runEventLoopUntilInterest();
+    // NOTE: in golem the loop is needed
+    // while (!done) {
+        runEventLoopUntilInterest();
+    // }
 
     if (!done) {
         let error = new Error("asyncToSync: illegal state: not done")
