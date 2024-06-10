@@ -7,6 +7,14 @@
 #include <iostream>
 #include <vector>
 
+
+#define LOG(...)                                                                                   \
+  {                                                                                                \
+    fprintf(stderr, __VA_ARGS__);                                                                  \
+    fprintf(stderr, "\n");                                                                         \
+    fflush(stderr);                                                                                \
+  }
+
 struct TaskQueue {
   std::vector<api::AsyncTask *> tasks = {};
   int interest_cnt = 0;
@@ -52,11 +60,15 @@ inline bool interest_complete() { return queue.get().interest_cnt == 0; }
 inline void exit_event_loop() { queue.get().event_loop_running = false; }
 
 bool EventLoop::run_event_loop_until_interest(api::Engine *engine, double total_compute) {
-  while (!interest_complete()) {
+  LOG("run_event_loop_until_interest - start, interest_cnt: %d", queue.get().interest_cnt);
+  do {
+    LOG("run_event_loop_until_interest - while start, interest_cnt: %d", queue.get().interest_cnt);
     if (!run_event_loop(engine, total_compute)) {
+      LOG("run_event_loop_until_interest - return false, interest_cnt: %d", queue.get().interest_cnt);
       return false;
     }
-  }
+  } while (has_pending_async_tasks() || !interest_complete());
+  LOG("run_event_loop_until_interest - return true, interest_cnt: %d", queue.get().interest_cnt);
   return true;
 }
 
