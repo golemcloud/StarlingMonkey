@@ -97,6 +97,7 @@ bool fetch(JSContext *cx, unsigned argc, Value *vp) {
   // If the request body is streamed, we need to wait for streaming to complete
   // before marking the request as pending.
   if (!streaming) {
+    ENGINE->incr_event_loop_interest();
     ENGINE->queue_async_task(new ResponseFutureTask(request_obj, pending_handle));
   }
 
@@ -109,7 +110,16 @@ bool fetch(JSContext *cx, unsigned argc, Value *vp) {
   return true;
 }
 
-const JSFunctionSpec methods[] = {JS_FN("fetch", fetch, 2, JSPROP_ENUMERATE), JS_FS_END};
+bool runEventLoopUntilInterest(JSContext *cx, unsigned argc, Value *vp) {
+  ENGINE->run_event_loop_until_interest();
+  return true;
+}
+
+const JSFunctionSpec methods[] = {
+    JS_FN("fetch", fetch, 2, JSPROP_ENUMERATE),
+    JS_FN("runEventLoopUntilInterest", runEventLoopUntilInterest, 0, JSPROP_ENUMERATE),
+    JS_FS_END,
+};
 
 bool install(api::Engine *engine) {
   ENGINE = engine;

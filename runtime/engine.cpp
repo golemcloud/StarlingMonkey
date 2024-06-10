@@ -482,6 +482,10 @@ bool api::Engine::run_event_loop() {
   return core::EventLoop::run_event_loop(this, 0);
 }
 
+bool api::Engine::run_event_loop_until_interest() {
+  return core::EventLoop::run_event_loop_until_interest(this, 0);
+}
+
 void api::Engine::incr_event_loop_interest() {
   return core::EventLoop::incr_event_loop_interest();
 }

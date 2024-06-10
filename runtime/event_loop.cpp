@@ -51,6 +51,15 @@ inline bool interest_complete() { return queue.get().interest_cnt == 0; }
 
 inline void exit_event_loop() { queue.get().event_loop_running = false; }
 
+bool EventLoop::run_event_loop_until_interest(api::Engine *engine, double total_compute) {
+  while (!interest_complete()) {
+    if (!run_event_loop(engine, total_compute)) {
+      return false;
+    }
+  }
+  return true;
+}
+
 bool EventLoop::run_event_loop(api::Engine *engine, double total_compute) {
   if (queue.get().event_loop_running) {
     fprintf(stderr, "cannot run event loop as it is already running");

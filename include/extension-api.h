@@ -89,6 +89,8 @@ public:
    */
   bool run_event_loop();
 
+  bool run_event_loop_until_interest();
+
   /**
    * Add an event loop interest to track
    */
