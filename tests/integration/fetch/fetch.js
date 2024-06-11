@@ -51,15 +51,18 @@ function asyncToSync(promise) {
             done = true;
         });
 
-    // NOTE: in golem the loop is needed
-    // while (!done) {
-        runEventLoopUntilInterest();
-    // }
+
+    let i = 0;
+    while (!done && i < 100) {
+        console.log("runEventLoop");
+        i += 1;
+        runEventLoop();
+    }
 
     if (!done) {
-        let error = new Error("asyncToSync: illegal state: not done")
+        let error = new Error("asyncToSync: illegal state: not done");
         console.error(error);
-        throw error
+        throw error;
     }
 
     if (!success) {
