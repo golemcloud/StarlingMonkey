@@ -97,7 +97,7 @@ bool fetch(JSContext *cx, unsigned argc, Value *vp) {
   // If the request body is streamed, we need to wait for streaming to complete
   // before marking the request as pending.
   if (!streaming) {
-    ENGINE->incr_event_loop_interest();
+    ENGINE->incr_event_loop_interest("fetch: not streaming");
     ENGINE->queue_async_task(new ResponseFutureTask(request_obj, pending_handle));
   }
 

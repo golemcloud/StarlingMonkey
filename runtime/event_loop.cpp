@@ -7,7 +7,6 @@
 #include <iostream>
 #include <vector>
 
-
 #define LOG(...)                                                                                   \
   {                                                                                                \
     fprintf(stderr, __VA_ARGS__);                                                                  \
@@ -48,11 +47,15 @@ bool EventLoop::cancel_async_task(api::Engine *engine, const int32_t id) {
 
 bool EventLoop::has_pending_async_tasks() { return !queue.get().tasks.empty(); }
 
-void EventLoop::incr_event_loop_interest() { queue.get().interest_cnt++; }
+void EventLoop::incr_event_loop_interest(const char *const debug) {
+  queue.get().interest_cnt++;
+  LOG("EventLoop::incr_event_loop_interest: %s, %d", debug, queue.get().interest_cnt);
+}
 
-void EventLoop::decr_event_loop_interest() {
+void EventLoop::decr_event_loop_interest(const char *const debug) {
   MOZ_ASSERT(queue.get().interest_cnt > 0);
   queue.get().interest_cnt--;
+  LOG("EventLoop::decr_event_loop_interest: %s %d", debug, queue.get().interest_cnt);
 }
 
 inline bool interest_complete() { return queue.get().interest_cnt == 0; }
@@ -94,7 +97,7 @@ bool EventLoop::run_event_loop(api::Engine *engine, double total_compute) {
       }
       exit_event_loop();
       fprintf(stderr, "event loop error - both task and job queues are empty, but expected "
-                      "operations did not resolve");
+                      "operations did not resolve\n");
       return false;
     }
 

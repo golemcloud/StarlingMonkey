@@ -228,7 +228,7 @@ public:
 
   [[nodiscard]] bool run(api::Engine *engine) override {
     // MOZ_ASSERT(ready());
-    engine->decr_event_loop_interest();
+    engine->decr_event_loop_interest("ResponseFutureTask::run");
     JSContext *cx = engine->cx();
 
     const RootedObject request(cx, request_);

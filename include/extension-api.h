@@ -94,13 +94,13 @@ public:
   /**
    * Add an event loop interest to track
    */
-  void incr_event_loop_interest();
+  void incr_event_loop_interest(const char *const debug);
 
   /**
    * Remove an event loop interest to track
    * The last decrementer marks the event loop as complete to finish
    */
-  void decr_event_loop_interest();
+  void decr_event_loop_interest(const char *const debug);
 
   /**
    * Get the JS value associated with the top-level script execution -

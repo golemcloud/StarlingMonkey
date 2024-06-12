@@ -78,7 +78,7 @@ public:
   }
 
   [[nodiscard]] bool run(api::Engine *engine) override {
-    ENGINE->decr_event_loop_interest();
+    ENGINE->decr_event_loop_interest("BodyFutureTask run");
     // MOZ_ASSERT(ready());
     JSContext *cx = engine->cx();
     RootedObject owner(cx, streams::NativeStreamSource::owner(body_source_));
@@ -469,7 +469,7 @@ bool finish_outgoing_body_streaming(JSContext* cx, HandleObject body_owner) {
             .toPrivate());
     SetReservedSlot(body_owner, static_cast<uint32_t>(Request::Slots::PendingResponseHandle),
                     PrivateValue(nullptr));
-    ENGINE->incr_event_loop_interest();
+    ENGINE->incr_event_loop_interest("finish_outgoing_body_streaming");
     ENGINE->queue_async_task(new ResponseFutureTask(body_owner, pending_handle));
   }
 
@@ -921,7 +921,7 @@ bool RequestOrResponse::body_source_pull_algorithm(JSContext *cx, CallArgs args,
     }
   }
 
-  ENGINE->incr_event_loop_interest();
+  ENGINE->incr_event_loop_interest("RequestOrResponse::body_source_pull_algorithm");
   ENGINE->queue_async_task(new BodyFutureTask(source));
 
   args.rval().setUndefined();

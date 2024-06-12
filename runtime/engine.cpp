@@ -486,12 +486,12 @@ bool api::Engine::run_event_loop_until_interest() {
   return core::EventLoop::run_event_loop_until_interest(this, 0);
 }
 
-void api::Engine::incr_event_loop_interest() {
-  return core::EventLoop::incr_event_loop_interest();
+void api::Engine::incr_event_loop_interest(const char *const debug) {
+  return core::EventLoop::incr_event_loop_interest(debug);
 }
 
-void api::Engine::decr_event_loop_interest() {
-  return core::EventLoop::decr_event_loop_interest();
+void api::Engine::decr_event_loop_interest(const char *const debug) {
+  return core::EventLoop::decr_event_loop_interest(debug);
 }
 
 bool api::Engine::dump_value(JS::Value val, FILE *fp) { return ::dump_value(CONTEXT, val, fp); }
