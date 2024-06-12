@@ -93,12 +93,9 @@ public:
 
     auto &chunk = read_res.unwrap();
     if (chunk.done) {
-      LOG("chunk done");
       RootedValue r(cx);
       return Call(cx, controller, "close", HandleValueArray::empty(), &r);
     }
-
-    LOG("chunk not done");
 
     // We don't release control of chunk's data until after we've checked that
     // the array buffer allocation has been successful, as that ensures that the
