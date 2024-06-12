@@ -1106,7 +1106,7 @@ bool RequestOrResponse::maybe_stream_body(JSContext *cx, JS::HandleObject body_o
   if (!JS::AddPromiseReactions(cx, promise, then_handler, catch_handler))
     return false;
 
-  fetch_event::FetchEvent::increase_interest();
+  // fetch_event::FetchEvent::increase_interest();
 
   *requires_streaming = true;
   return true;
