@@ -8,6 +8,7 @@
 #include "extension-api.h"
 #include "fetch_event.h"
 #include "host_api.h"
+#include "log.h"
 #include "picosha2.h"
 
 #include "js/Array.h"
@@ -24,13 +25,6 @@
 #include "../worker-location.h"
 #include "js/experimental/TypedData.h"
 #pragma clang diagnostic pop
-
-#define LOG(...)                                                                                   \
-  {                                                                                                \
-    fprintf(stderr, __VA_ARGS__);                                                                  \
-    fprintf(stderr, "\n");                                                                         \
-    fflush(stderr);                                                                                \
-  }
 
 namespace builtins::web::streams {
 

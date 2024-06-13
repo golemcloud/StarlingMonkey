@@ -47,9 +47,7 @@ static bool dump_mem_stats(JSContext *cx) {
 }
 #endif // MEM_STATS
 
-#ifndef DEBUG_LOGGING
-#define DEBUG_LOGGING false
-#endif
+#include "log.h"
 
 using std::chrono::duration_cast;
 using std::chrono::microseconds;
@@ -59,11 +57,6 @@ using JS::Value;
 
 __attribute__((weak))
 bool debug_logging_enabled() { return DEBUG_LOGGING; }
-#define LOG(...)                                                                                   \
-  if (debug_logging_enabled()) {                                                                   \
-    printf(__VA_ARGS__);                                                                           \
-    fflush(stdout);                                                                                \
-  }
 
 JS::UniqueChars stringify_value(JSContext *cx, JS::HandleValue value) {
   JS::RootedString str(cx, JS_ValueToSource(cx, value));

@@ -3,16 +3,10 @@
 #include "host_api.h"
 #include "jsapi.h"
 #include "jsfriendapi.h"
+#include "log.h"
 
 #include <iostream>
 #include <vector>
-
-#define LOG(...)                                                                                   \
-  {                                                                                                \
-    fprintf(stderr, __VA_ARGS__);                                                                  \
-    fprintf(stderr, "\n");                                                                         \
-    fflush(stderr);                                                                                \
-  }
 
 struct TaskQueue {
   std::vector<api::AsyncTask *> tasks = {};
