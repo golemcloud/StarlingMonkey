@@ -116,7 +116,6 @@ bool runEventLoop(JSContext *cx, unsigned argc, Value *vp) {
 
 const JSFunctionSpec methods[] = {
     JS_FN("fetch", fetch, 2, JSPROP_ENUMERATE),
-    JS_FN("runEventLoop", runEventLoop, 0, JSPROP_ENUMERATE),
     JS_FN("runEventLoopUntilInterest", runEventLoopUntilInterest, 0, JSPROP_ENUMERATE),
     JS_FS_END,
 };
