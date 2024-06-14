@@ -38,6 +38,9 @@ public:
   JSContext *cx();
   HandleObject global();
 
+  /// Initialize the engine with the given filename
+  bool initialize(const char * filename);
+
   /**
    * Define a new builtin module
    *
@@ -62,6 +65,11 @@ public:
    */
   void enable_module_mode(bool enable);
   bool eval_toplevel(const char *path, MutableHandleValue result);
+  bool eval_toplevel(JS::SourceText<mozilla::Utf8Unit> &source, const char *path,
+                     MutableHandleValue result);
+
+  bool is_preinitializing();
+  bool toplevel_evaluated();
 
   /**
    * Run the async event loop as long as there's interest registered in keeping it running.
@@ -81,16 +89,18 @@ public:
    */
   bool run_event_loop();
 
+  bool run_event_loop_until_interest();
+
   /**
    * Add an event loop interest to track
    */
-  void incr_event_loop_interest();
+  void incr_event_loop_interest(const char *const debug);
 
   /**
    * Remove an event loop interest to track
    * The last decrementer marks the event loop as complete to finish
    */
-  void decr_event_loop_interest();
+  void decr_event_loop_interest(const char *const debug);
 
   /**
    * Get the JS value associated with the top-level script execution -
@@ -111,6 +121,9 @@ public:
   void dump_pending_exception(const char *description = "");
   void dump_promise_rejection(HandleValue reason, HandleObject promise, FILE *fp);
 };
+
+
+typedef bool (*TaskCompletionCallback)(JSContext* cx, HandleObject receiver);
 
 class AsyncTask {
 protected:
@@ -133,6 +146,11 @@ public:
    * Select for the next available ready task, providing the oldest ready first.
    */
   static size_t select(std::vector<AsyncTask *> *handles);
+
+  /**
+   * Non-blocking check for a ready task, providing the oldest ready first, if any.
+   */
+  static std::optional<size_t> ready(std::vector<AsyncTask *> *handles);
 };
 
 } // namespace api

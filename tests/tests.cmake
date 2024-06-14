@@ -38,4 +38,6 @@ test_e2e(tla-runtime-resolve)
 test_integration(btoa)
 test_integration(performance)
 test_integration(crypto)
+# Disabled for now
+# test_integration(fetchsync)
 test_integration(timers)

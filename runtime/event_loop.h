@@ -26,12 +26,14 @@ public:
 
   /**
    * Run the event loop until all interests are complete.
-   * See run_event_loop in extension-api.h for the complete description.
+   * See run_in extension-api.h for the complete description.
    */
   static bool run_event_loop(api::Engine *engine, double total_compute);
 
-  static void incr_event_loop_interest();
-  static void decr_event_loop_interest();
+  static bool run_event_loop_until_interest(api::Engine *engine, double total_compute);
+
+  static void incr_event_loop_interest(const char *const debug);
+  static void decr_event_loop_interest(const char *const debug);
 
   /**
    * Select on the next async tasks

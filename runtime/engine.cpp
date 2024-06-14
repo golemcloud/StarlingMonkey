@@ -47,9 +47,7 @@ static bool dump_mem_stats(JSContext *cx) {
 }
 #endif // MEM_STATS
 
-#ifndef DEBUG_LOGGING
-#define DEBUG_LOGGING false
-#endif
+#include "log.h"
 
 using std::chrono::duration_cast;
 using std::chrono::microseconds;
@@ -59,11 +57,6 @@ using JS::Value;
 
 __attribute__((weak))
 bool debug_logging_enabled() { return DEBUG_LOGGING; }
-#define LOG(...)                                                                                   \
-  if (debug_logging_enabled()) {                                                                   \
-    printf(__VA_ARGS__);                                                                           \
-    fflush(stdout);                                                                                \
-  }
 
 JS::UniqueChars stringify_value(JSContext *cx, JS::HandleValue value) {
   JS::RootedString str(cx, JS_ValueToSource(cx, value));
@@ -201,6 +194,8 @@ bool fix_math_random(JSContext *cx, HandleObject global) {
   return JS_DefineFunctions(cx, math, funs);
 }
 
+static api::Engine *ENGINE;
+
 bool init_js() {
   JS_Init();
 
@@ -253,8 +248,9 @@ bool init_js() {
   // generating bytecode for functions.
   // https://searchfox.org/mozilla-central/rev/5b2d2863bd315f232a3f769f76e0eb16cdca7cb0/js/public/CompileOptions.h#571-574
   opts->setForceFullParse();
-  scriptLoader = new ScriptLoader(cx, opts);
+  scriptLoader = new ScriptLoader(ENGINE, opts);
 
+  // TODO: restore in a way that doesn't cause a dependency on the Performance builtin in the core runtime.
   //   builtins::Performance::timeOrigin.emplace(
   //       std::chrono::high_resolution_clock::now());
 
@@ -329,6 +325,7 @@ static void abort(JSContext *cx, const char *description) {
 
 api::Engine::Engine() {
   // total_compute = 0;
+  ENGINE = this;
   bool result = init_js();
   MOZ_RELEASE_ASSERT(result);
   JS::EnterRealm(cx(), global());
@@ -338,6 +335,46 @@ api::Engine::Engine() {
 JSContext *api::Engine::cx() { return CONTEXT; }
 
 HandleObject api::Engine::global() { return GLOBAL; }
+
+extern bool install_builtins(api::Engine *engine);
+
+#ifdef DEBUG
+static bool trap(JSContext *cx, unsigned argc, JS::Value *vp) {
+  JS::CallArgs args = CallArgsFromVp(argc, vp);
+  ENGINE->dump_value(args.get(0));
+  MOZ_ASSERT(false, "trap function called");
+  return false;
+}
+#endif
+
+bool api::Engine::initialize(const char *filename) {
+  if (!install_builtins(this)) {
+    return false;
+  }
+
+#ifdef DEBUG
+  if (!JS_DefineFunction(cx(), global(), "trap", trap, 1, 0)) {
+    return false;
+  }
+#endif
+
+  if (!filename || strlen(filename) == 0) {
+    return true;
+  }
+
+  RootedValue result(cx());
+
+  if (!eval_toplevel(filename, &result)) {
+    if (JS_IsExceptionPending(cx())) {
+      dump_pending_exception("pre-initializing");
+    }
+    return false;
+  }
+
+  js::ResetMathRandomSeed(cx());
+
+  return true;
+}
 void api::Engine::enable_module_mode(bool enable) {
   scriptLoader->enable_module_mode(enable);
 }
@@ -353,11 +390,14 @@ bool api::Engine::define_builtin_module(const char* id, HandleValue builtin) {
   return scriptLoader->define_builtin_module(id, builtin);
 }
 
-bool api::Engine::eval_toplevel(const char *path, MutableHandleValue result) {
+static bool TOPLEVEL_EVALUATED = false;
+
+bool api::Engine::eval_toplevel(JS::SourceText<mozilla::Utf8Unit> &source, const char *path,
+                                MutableHandleValue result) {
   JSContext *cx = CONTEXT;
   RootedValue ns(cx);
   RootedValue tla_promise(cx);
-  if (!scriptLoader->load_top_level_script(path, &ns, &tla_promise)) {
+  if (!scriptLoader->eval_top_level_script(path, source, &ns, &tla_promise)) {
     return false;
   }
 
@@ -401,8 +441,10 @@ bool api::Engine::eval_toplevel(const char *path, MutableHandleValue result) {
   // the shrinking GC causes them to be intermingled with other objects. I.e.,
   // writes become more fragmented due to the shrinking GC.
   // https://github.com/fastly/js-compute-runtime/issues/224
-  JS::PrepareForFullGC(cx);
-  JS::NonIncrementalGC(cx, JS::GCOptions::Normal, JS::GCReason::API);
+  if (isWizening()) {
+    JS::PrepareForFullGC(cx);
+    JS::NonIncrementalGC(cx, JS::GCOptions::Normal, JS::GCReason::API);
+  }
 
   // Ignore the first GC, but then print all others, because ideally GCs
   // should be rare, and developers should know about them.
@@ -410,19 +452,39 @@ bool api::Engine::eval_toplevel(const char *path, MutableHandleValue result) {
   // dedicated log target for telemetry messages like this.
   JS_SetGCCallback(cx, gc_callback, nullptr);
 
+  TOPLEVEL_EVALUATED = true;
+
   return true;
+}
+bool api::Engine::is_preinitializing() { return isWizening(); }
+
+bool api::Engine::eval_toplevel(const char *path, MutableHandleValue result) {
+  JS::SourceText<mozilla::Utf8Unit> source;
+  if (!scriptLoader->load_script(CONTEXT, path, source)) {
+    return false;
+  }
+
+  return eval_toplevel(source, path, result);
+}
+
+bool api::Engine::toplevel_evaluated() {
+  return TOPLEVEL_EVALUATED;
 }
 
 bool api::Engine::run_event_loop() {
   return core::EventLoop::run_event_loop(this, 0);
 }
 
-void api::Engine::incr_event_loop_interest() {
-  return core::EventLoop::incr_event_loop_interest();
+bool api::Engine::run_event_loop_until_interest() {
+  return core::EventLoop::run_event_loop_until_interest(this, 0);
 }
 
-void api::Engine::decr_event_loop_interest() {
-  return core::EventLoop::decr_event_loop_interest();
+void api::Engine::incr_event_loop_interest(const char *const debug) {
+  return core::EventLoop::incr_event_loop_interest(debug);
+}
+
+void api::Engine::decr_event_loop_interest(const char *const debug) {
+  return core::EventLoop::decr_event_loop_interest(debug);
 }
 
 bool api::Engine::dump_value(JS::Value val, FILE *fp) { return ::dump_value(CONTEXT, val, fp); }
