@@ -983,17 +983,16 @@ bool reader_for_outgoing_body_then_handler(JSContext *cx, JS::HandleObject body_
     return false;
   }
 
-  host_api::Result<host_api::Void> res;
-  {
-    JS::AutoCheckCannotGC nogc;
-    JSObject *array = &val.toObject();
-    bool is_shared;
-    uint8_t *bytes = JS_GetUint8ArrayData(array, &is_shared, nogc);
-    size_t length = JS_GetTypedArrayByteLength(array);
-    // TODO: change this to write in chunks, respecting backpressure.
-    auto body = RequestOrResponse::outgoing_body_handle(body_owner);
-    res = body->write_all(bytes, length);
-  }
+  RootedObject array(cx, &val.toObject());
+  size_t length = JS_GetTypedArrayByteLength(array);
+  bool is_shared;
+  RootedObject buffer(cx, JS_GetArrayBufferViewBuffer(cx, array, &is_shared));
+  MOZ_ASSERT(!is_shared);
+  auto bytes = static_cast<uint8_t *>(StealArrayBufferContents(cx, buffer));
+  // TODO: change this to write in chunks, respecting backpressure.
+  auto body = RequestOrResponse::outgoing_body_handle(body_owner);
+  auto res = body->write_all(bytes, length);
+  js_free(bytes);
 
   // Needs to be outside the nogc block in case we need to create an exception.
   if (auto *err = res.to_err()) {
@@ -1053,14 +1052,6 @@ bool RequestOrResponse::maybe_stream_body(JSContext *cx, JS::HandleObject body_o
     JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr,
                               JSMSG_RESPONSE_BODY_DISTURBED_OR_LOCKED);
     return false;
-  }
-
-  if (streams::TransformStream::is_ts_readable(cx, stream)) {
-    JSObject *ts = streams::TransformStream::ts_from_readable(cx, stream);
-    if (streams::TransformStream::readable_used_as_body(ts)) {
-      *requires_streaming = true;
-      return true;
-    }
   }
 
   // If the body stream is backed by an HTTP body handle, we can directly pipe
