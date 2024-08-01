@@ -336,9 +336,7 @@ bool URLSearchParams::forEach(JSContext *cx, unsigned argc, JS::Value *vp) {
   const auto params = get_params(self);
 
   if (!args[0].isObject() || !JS::IsCallable(&args[0].toObject())) {
-    JS_ReportErrorASCII(cx, "Failed to execute 'forEach' on 'URLSearchParams': "
-                            "parameter 1 is not of type 'Function'");
-    return false;
+    return api::throw_error(cx, api::Errors::ForEachCallback, "URLSearchParams");
   }
 
   JS::HandleValue callback = args[0];
@@ -540,9 +538,13 @@ const JSPropertySpec URL::properties[] = {
     JS_PS_END,
 };
 
+const jsurl::JSUrl *URL::url(JSObject *self) {
+  MOZ_ASSERT(is_instance(self));
+  return static_cast<const jsurl::JSUrl *>(JS::GetReservedSlot(self, Url).toPrivate());
+}
+
 jsurl::SpecString URL::origin(JSContext *cx, JS::HandleObject self) {
-  auto *url = static_cast<const jsurl::JSUrl *>(JS::GetReservedSlot(self, Slots::Url).toPrivate());
-  return jsurl::origin(url);
+  return jsurl::origin(url(self));
 }
 
 bool URL::origin(JSContext *cx, JS::HandleObject self, JS::MutableHandleValue rval) {
@@ -564,12 +566,15 @@ bool URL::searchParams_get(JSContext *cx, unsigned argc, JS::Value *vp) {
   JS::Value params_val = JS::GetReservedSlot(self, Slots::Params);
   JS::RootedObject params(cx);
   if (params_val.isNullOrUndefined()) {
-    auto *url = static_cast<jsurl::JSUrl *>(JS::GetReservedSlot(self, Slots::Url).toPrivate());
     JS::RootedObject url_search_params_instance(
         cx, JS_NewObjectWithGivenProto(cx, &URLSearchParams::class_, URLSearchParams::proto_obj));
     if (!url_search_params_instance)
       return false;
-    params = URLSearchParams::create(cx, url_search_params_instance, url);
+
+    // The const-cast here is okay because we while normally callers of URL::url mustn't mutate
+    // the returned object, URLSearchParams is intended to.
+    params = URLSearchParams::create(cx, url_search_params_instance,
+                                     const_cast<jsurl::JSUrl *>(url(self)));
     if (!params)
       return false;
     JS::SetReservedSlot(self, Slots::Params, JS::ObjectValue(*params));
@@ -605,6 +610,8 @@ bool URL::constructor(JSContext *cx, unsigned argc, JS::Value *vp) {
   return true;
 }
 
+DEF_ERR(InvalidURLError, JSEXN_TYPEERR, "URL constructor: {0} is not a valid URL.", 1);
+
 JSObject *URL::create(JSContext *cx, JS::HandleObject self, jsurl::SpecString url_str,
                       const jsurl::JSUrl *base) {
   jsurl::JSUrl *url;
@@ -615,7 +622,7 @@ JSObject *URL::create(JSContext *cx, JS::HandleObject self, jsurl::SpecString ur
   }
 
   if (!url) {
-    JS_ReportErrorUTF8(cx, "URL constructor: %s is not a valid URL.", (char *)url_str.data);
+    api::throw_error(cx, InvalidURLError, (char *)url_str.data);
     return nullptr;
   }
 
@@ -659,7 +666,7 @@ JSObject *URL::create(JSContext *cx, JS::HandleObject self, JS::HandleValue url_
 
     base = jsurl::new_jsurl(&str);
     if (!base) {
-      JS_ReportErrorUTF8(cx, "URL constructor: %s is not a valid URL.", (char *)str.data);
+      api::throw_error(cx, InvalidURLError, (char *)str.data);
       return nullptr;
     }
   }

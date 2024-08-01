@@ -5,7 +5,7 @@
 #include "encode.h"
 #include "request-response.h"
 
-#include "bindings.h"
+#include "../dom-exception.h"
 
 #include <allocator.h>
 #include <js/SourceText.h>
@@ -30,13 +30,10 @@ void inc_pending_promise_count(JSObject *self) {
   auto count =
       JS::GetReservedSlot(self, static_cast<uint32_t>(FetchEvent::Slots::PendingPromiseCount))
           .toInt32();
-  if (count == 0) {
-    ENGINE->incr_event_loop_interest("inc_pending_promise_count count 0");
-  }
   count++;
   MOZ_ASSERT(count > 0);
   if (count == 1) {
-    ENGINE->incr_event_loop_interest("inc_pending_promise_count count 1");
+    ENGINE->incr_event_loop_interest();
   }
   JS::SetReservedSlot(self, static_cast<uint32_t>(FetchEvent::Slots::PendingPromiseCount),
                       JS::Int32Value(count));
@@ -50,7 +47,7 @@ void dec_pending_promise_count(JSObject *self) {
   MOZ_ASSERT(count > 0);
   count--;
   if (count == 0) {
-    ENGINE->decr_event_loop_interest("dec_pending_promise_count");
+    ENGINE->decr_event_loop_interest();
   }
   JS::SetReservedSlot(self, static_cast<uint32_t>(FetchEvent::Slots::PendingPromiseCount),
                       JS::Int32Value(count));
@@ -74,11 +71,11 @@ bool add_pending_promise(JSContext *cx, JS::HandleObject self, JS::HandleObject 
 } // namespace
 
 JSObject *FetchEvent::prepare_downstream_request(JSContext *cx) {
-  JS::RootedObject requestInstance(
-      cx, JS_NewObjectWithGivenProto(cx, &Request::class_, Request::proto_obj));
-  if (!requestInstance)
+  JS::RootedObject request(cx, Request::create(cx));
+  if (!request)
     return nullptr;
-  return Request::create(cx, requestInstance);
+  Request::init_slots(request);
+  return request;
 }
 
 bool FetchEvent::init_incoming_request(JSContext *cx, JS::HandleObject self,
@@ -168,7 +165,7 @@ bool send_response(host_api::HttpOutgoingResponse *response, JS::HandleObject se
   return true;
 }
 
-bool start_response(JSContext *cx, JS::HandleObject response_obj, bool streaming) {
+bool start_response(JSContext *cx, JS::HandleObject response_obj) {
   auto status = Response::status(response_obj);
   auto headers = RequestOrResponse::headers_handle_clone(cx, response_obj,
     host_api::HttpHeadersGuard::Response);
@@ -178,42 +175,23 @@ bool start_response(JSContext *cx, JS::HandleObject response_obj, bool streaming
 
   host_api::HttpOutgoingResponse* response =
     host_api::HttpOutgoingResponse::make(status, std::move(headers));
-  if (streaming) {
-    // Get the body here, so it will be stored on the response object.
-    // Otherwise, it'd not be available anymore, because the response handle itself
-    // is consumed by sending it off.
-    auto body = response->body().unwrap();
-    MOZ_RELEASE_ASSERT(body);
-  }
-  MOZ_RELEASE_ASSERT(response);
 
   auto existing_handle = Response::response_handle(response_obj);
   if (existing_handle) {
     MOZ_ASSERT(existing_handle->is_incoming());
-    if (streaming) {
-      auto *source_body = static_cast<host_api::HttpIncomingResponse*>(existing_handle)->body().unwrap();
-      auto *dest_body = response->body().unwrap();
-
-      // TODO: check if we should add a callback here and do something in response to body
-      //  streaming being finished.
-      auto res = dest_body->append(ENGINE, source_body, nullptr, nullptr);
-      if (auto *err = res.to_err()) {
-        HANDLE_ERROR(cx, *err);
-        return false;
-      }
-      MOZ_RELEASE_ASSERT(RequestOrResponse::mark_body_used(cx, response_obj));
-    }
   } else {
     SetReservedSlot(response_obj, static_cast<uint32_t>(Response::Slots::Response),
                     PrivateValue(response));
   }
 
-  if (streaming && response->has_body()) {
-    STREAMING_BODY = response->body().unwrap();
+  bool streaming = false;
+  if (!RequestOrResponse::maybe_stream_body(cx, response_obj, response, &streaming)) {
+    return false;
   }
 
   if (streaming) {
-    ENGINE->incr_event_loop_interest("start_response: streaming");
+    STREAMING_BODY = response->body().unwrap();
+    FetchEvent::increase_interest();
   }
 
   return send_response(response, FetchEvent::instance(),
@@ -232,9 +210,7 @@ bool response_promise_then_handler(JSContext *cx, JS::HandleObject event, JS::Ha
   // of a Promise wrapping it, so either the value is a Response, or we have to
   // bail.
   if (!Response::is_instance(args.get(0))) {
-    JS_ReportErrorUTF8(cx, "FetchEvent#respondWith must be called with a Response "
-                           "object or a Promise resolving to a Response object as "
-                           "the first argument");
+    api::throw_error(cx, FetchErrors::InvalidRespondWithArg);
     JS::RootedObject rejection(cx, PromiseRejectedWithPendingError(cx));
     if (!rejection)
       return false;
@@ -245,13 +221,7 @@ bool response_promise_then_handler(JSContext *cx, JS::HandleObject event, JS::Ha
   // Step 10.2 (very roughly: the way we handle responses and their bodies is
   // very different.)
   JS::RootedObject response_obj(cx, &args[0].toObject());
-
-  bool streaming = false;
-  if (!RequestOrResponse::maybe_stream_body(cx, response_obj, &streaming)) {
-    return false;
-  }
-
-  return start_response(cx, response_obj, streaming);
+  return start_response(cx, response_obj);
 }
 
 // Steps in this function refer to the spec at
@@ -282,15 +252,16 @@ bool FetchEvent::respondWith(JSContext *cx, unsigned argc, JS::Value *vp) {
 
   // Step 2
   if (!is_dispatching(self)) {
-    JS_ReportErrorUTF8(cx, "FetchEvent#respondWith must be called synchronously from "
-                           "within a FetchEvent handler");
-    return false;
+    return dom_exception::DOMException::raise(cx,
+      "FetchEvent#respondWith must be called synchronously from within a FetchEvent handler",
+      "InvalidStateError");
   }
 
   // Step 3
   if (state(self) != State::unhandled) {
-    JS_ReportErrorUTF8(cx, "FetchEvent#respondWith can't be called twice on the same event");
-    return false;
+    return dom_exception::DOMException::raise(cx,
+      "FetchEvent#respondWith can't be called twice on the same event",
+      "InvalidStateError");
   }
 
   // Step 4
@@ -359,8 +330,10 @@ bool FetchEvent::waitUntil(JSContext *cx, unsigned argc, JS::Value *vp) {
 
   // Step 2
   if (!is_active(self)) {
-    JS_ReportErrorUTF8(cx, "FetchEvent#waitUntil called on inactive event");
-    return false;
+    return dom_exception::DOMException::raise(
+      cx,
+      "waitUntil called on a FetchEvent that isn't active anymore",
+      "InvalidStateError");
   }
 
   // Steps 3-4
@@ -450,13 +423,11 @@ bool FetchEvent::is_dispatching(JSObject *self) {
 
 void FetchEvent::start_dispatching(JSObject *self) {
   MOZ_ASSERT(!is_dispatching(self));
-  ENGINE->incr_event_loop_interest("FetchEvent::start_dispatching");
   JS::SetReservedSlot(self, static_cast<uint32_t>(Slots::Dispatch), JS::TrueValue());
 }
 
 void FetchEvent::stop_dispatching(JSObject *self) {
   MOZ_ASSERT(is_dispatching(self));
-  ENGINE->decr_event_loop_interest("FetchEvent::stop_dispatching");
   JS::SetReservedSlot(self, static_cast<uint32_t>(Slots::Dispatch), JS::FalseValue());
 }
 
@@ -468,9 +439,18 @@ FetchEvent::State FetchEvent::state(JSObject *self) {
 
 void FetchEvent::set_state(JSObject *self, State new_state) {
   MOZ_ASSERT(is_instance(self));
-  MOZ_ASSERT((uint8_t)new_state > (uint8_t)state(self));
+  auto current_state = state(self);
+  MOZ_ASSERT((uint8_t)new_state > (uint8_t)current_state);
   JS::SetReservedSlot(self, static_cast<uint32_t>(Slots::State),
                       JS::Int32Value(static_cast<int32_t>(new_state)));
+
+  if (current_state == State::responseStreaming &&
+    (new_state == State::responseDone || new_state == State::respondedWithError)) {
+    if (STREAMING_BODY && STREAMING_BODY->valid()) {
+      STREAMING_BODY->close();
+    }
+    decrease_interest();
+  }
 }
 
 bool FetchEvent::response_started(JSObject *self) {
@@ -537,49 +517,75 @@ static void dispatch_fetch_event(HandleObject event, double *total_compute) {
   // LOG("Request handler took %fms\n", diff / 1000);
 }
 
-bool handle_incoming_request(host_api::HttpIncomingRequest * request) {
-  if (!ENGINE->toplevel_evaluated()) {
-    JS::SourceText<mozilla::Utf8Unit> source;
-    auto body = request->body().unwrap();
-    auto pollable = body->subscribe().unwrap();
-    size_t len = 0;
-    vector<host_api::HostBytes> chunks;
+/**
+ * Reads the incoming request's body and evaluates it as a script.
+ *
+ * Mainly useful for debugging purposes, and only even reachable in components that
+ * were created without an input script during wizening.
+ */
+bool eval_request_body(host_api::HttpIncomingRequest *request) {
+  JS::SourceText<mozilla::Utf8Unit> source;
+  auto body = request->body().unwrap();
+  auto pollable = body->subscribe().unwrap();
+  size_t len = 0;
+  vector<host_api::HostBytes> chunks;
 
-    while (true) {
-      host_api::block_on_pollable_handle(pollable);
-      auto result = body->read(4096);
-      if (result.unwrap().done) {
-        break;
-      }
-
-      auto chunk = std::move(result.unwrap().bytes);
-      len += chunk.size();
-      chunks.push_back(std::move(chunk));
+  while (true) {
+    host_api::block_on_pollable_handle(pollable);
+    auto result = body->read(4096);
+    if (result.unwrap().done) {
+      break;
     }
 
-    // Merge all chunks into one buffer
-    auto buffer = new char[len];
-    size_t offset = 0;
-    for (auto &chunk : chunks) {
-      memcpy(buffer + offset, chunk.ptr.get(), chunk.size());
-      offset += chunk.size();
-    }
-
-    if (!source.init(CONTEXT, buffer, len, JS::SourceOwnership::TakeOwnership)) {
-      return false;
-    }
-
-    RootedValue rval(ENGINE->cx());
-    if (!ENGINE->eval_toplevel(source, "<runtime eval>", &rval)) {
-      if (JS_IsExceptionPending(ENGINE->cx())) {
-        ENGINE->dump_pending_exception("Runtime script evaluation");
-      }
-      return false;
-    }
+    auto chunk = std::move(result.unwrap().bytes);
+    len += chunk.size();
+    chunks.push_back(std::move(chunk));
   }
+
+  // Merge all chunks into one buffer
+  auto buffer = new char[len];
+  size_t offset = 0;
+  for (auto &chunk : chunks) {
+    memcpy(buffer + offset, chunk.ptr.get(), chunk.size());
+    offset += chunk.size();
+  }
+
+  if (len == 0) {
+    fprintf(stderr, "Error: Failed to evaluate incoming request body. "
+                    "Components without an initialized script have to be invoked with a body"
+                    "that can be run as a JS script\n");
+    return false;
+  }
+
+  if (!source.init(CONTEXT, buffer, len, JS::SourceOwnership::TakeOwnership)) {
+    return false;
+  }
+
+  RootedValue rval(ENGINE->cx());
+  if (!ENGINE->eval_toplevel(source, "<runtime eval>", &rval)) {
+    if (JS_IsExceptionPending(ENGINE->cx())) {
+      ENGINE->dump_pending_exception("Runtime script evaluation");
+    }
+    return false;
+  }
+  return true;
+}
+
+bool handle_incoming_request(host_api::HttpIncomingRequest * request) {
+#ifdef DEBUG
+  fprintf(stderr, "Warning: Using a DEBUG build. Expect things to be SLOW.\n");
+#endif
 
   HandleObject fetch_event = FetchEvent::instance();
   MOZ_ASSERT(FetchEvent::is_instance(fetch_event));
+
+  if (!ENGINE->toplevel_evaluated()) {
+    if (!eval_request_body(request)) {
+      FetchEvent::respondWithError(ENGINE->cx(), fetch_event);
+      return true;
+    }
+  }
+
   if (!FetchEvent::init_incoming_request(ENGINE->cx(), fetch_event, request)) {
     ENGINE->dump_pending_exception("initialization of FetchEvent");
     return false;

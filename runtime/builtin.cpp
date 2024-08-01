@@ -1,19 +1,30 @@
 #include "builtin.h"
 
-const JSErrorFormatString *GetErrorMessage(void *userRef, unsigned errorNumber) {
-  if (errorNumber > 0 && errorNumber < JSErrNum_Limit) {
-    return &js_ErrorFormatString[errorNumber];
+static const JSErrorFormatString *GetErrorMessageFromRef(void *userRef, unsigned errorNumber) {
+  auto error = static_cast<JSErrorFormatString *>(userRef);
+
+  JS::ConstUTF8CharsZ(error->format, strlen(error->format));
+  return error;
+}
+
+bool api::throw_error(JSContext* cx, const JSErrorFormatString &error,
+                      const char* arg1, const char* arg2, const char* arg3, const char* arg4) {
+  const char** args = nullptr;
+  const char* list[4] = { arg1, arg2, arg3, arg4 };
+  if (arg1) {
+    args = list;
   }
 
-  return nullptr;
+  JS_ReportErrorNumberUTF8Array(cx, GetErrorMessageFromRef,
+    const_cast<JSErrorFormatString*>(&error), 0, args);
+  return false;
 }
 
 std::optional<std::span<uint8_t>> value_to_buffer(JSContext *cx, JS::HandleValue val,
                                                   const char *val_desc) {
   if (!val.isObject() ||
       !(JS_IsArrayBufferViewObject(&val.toObject()) || JS::IsArrayBufferObject(&val.toObject()))) {
-    JS_ReportErrorNumberUTF8(cx, GetErrorMessage, nullptr, JSMSG_INVALID_BUFFER_ARG, val_desc,
-                             val.type());
+    api::throw_error(cx, api::Errors::InvalidBuffer, val_desc);
     return std::nullopt;
   }
 

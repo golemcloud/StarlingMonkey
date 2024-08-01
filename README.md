@@ -73,32 +73,40 @@ cd cmake-build-release
 ./componentize.sh ../tests/smoke.js
 ```
 
+## Web Platform Tests
 
-## Thorough testing with the Web Platform Tests suite
-
-StarlingMonkey includes a test runner for the [Web Platform Tests](https://web-platform-tests.org/) suite. The test runner is built as part of the `starling.wasm` runtime, and can be run using the `wpt-test` target.
-
-### Requirements
-
-The WPT runner requires `Node.js` to be installed, and during build configuration the option `ENABLE_WPT:BOOL=ON` must be set.
-
-When running the test, `WPT_ROOT` must be set to the path of a checkout of the WPT suite at revision `1014eae5e66f8f334610d5a1521756f7a2fb769f`:
+To run the [Web Platform Tests](https://web-platform-tests.org/) suite, the WPT runner requires `Node.js` to be installed, and during build configuration the option `ENABLE_WPT:BOOL=ON` must be set.
 
 ```bash
-WPT_ROOT=[path to your WPT checkout] cmake -S . -B cmake-build-debug -DENABLE_WPT:BOOL=ON -DCMAKE_BUILD_TYPE=Debug
+cmake -S . -B cmake-build-debug -DENABLE_WPT:BOOL=ON -DCMAKE_BUILD_TYPE=Debug
 cmake --build cmake-build-debug --parallel 8 --target wpt-runtime
 cd cmake-build-debug
-ctest --verbose # Note: some of the tests run fairly slowly in debug builds, so be patient
+ctest -R wpt --verbose # Note: some of the tests run fairly slowly in debug builds, so be patient
+```
+
+The Web Platform Tests checkout can also be customized by setting the `WPT_ROOT=[path to your WPT checkout]` environment variable to the cmake command.
+
+WPT tests can be filtered with the `WPT_FILTER=string` variable, for example:
+
+```bash
+WPT_FILTER=fetch ctest -R wpt -v
+```
+
+Custom flags can also be passed to the test runner via `WPT_FLAGS="..."`, for example to update expectations use:
+
+```bash
+WPT_FLAGS="--update-expectations" ctest -R wpt -v
 ```
 
 ## Configuring available builtins
+
 StarlingMonkey supports enabling/disabling bundled builtins using CMake options. You can get a full list of bundled builtins by running the following shell command:
+
 ```shell
 cmake -P [PATH_TO_STARLING_MONKEY]/cmake/builtins.cmake
 ```
 
 Note that it's required to include builtins defining all exports defined by the used host API. Using the default WASI 0.2.0 host API, that means including the `fetch_event` builtin.
-
 
 ## Using StarlingMonkey as a CMake sub-project
 
@@ -145,6 +153,10 @@ If your builtin requires multiple `.cpp` files, you can pass all of them to `add
 
 ### Providing a custom host API implementation
 
-The [host-apis](host-apis) directory contains implementations of the host API for different versions of WASI. Those can be selected by setting the `HOST_API` environment variable to the name of one of the directories. By default, the [wasi-0.2.0](host-apis/wasi-0.2.0) host API is used.
+The [host-apis](host-apis) directory can contain implementations of the host API for different 
+versions of WASI—or in theory any other host interface. Those can be selected by setting the 
+`HOST_API` environment variable to the 
+name of one of the directories. Currently, only an implementation in terms of [wasi-0.2.0]
+(host-apis/wasi-0.2.0) is provided, and used by default.
 
 To provide a custom host API implementation, you can set `HOST_API` to the (absolute) path of a directory containing that implementation.

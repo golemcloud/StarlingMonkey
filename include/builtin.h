@@ -49,26 +49,17 @@ using JS::PersistentRooted;
 
 std::optional<std::span<uint8_t>> value_to_buffer(JSContext *cx, HandleValue val,
                                                   const char *val_desc);
-enum JSErrNum {
-#define MSG_DEF(name, count, exception, format) name,
-#include "error-numbers.msg"
 
-#undef MSG_DEF
-  JSErrNum_Limit
-};
+#define DEF_ERR(name, exception, format, count) \
+static constexpr JSErrorFormatString name = { #name, format, count, exception };
+
+namespace api {
+#include "errors.h"
+}
 
 bool hasWizeningFinished();
 bool isWizening();
 void markWizeningAsFinished();
-
-const JSErrorFormatString js_ErrorFormatString[JSErrNum_Limit] = {
-#define MSG_DEF(name, count, exception, format) {#name, format, count, exception},
-#include "error-numbers.msg"
-
-#undef MSG_DEF
-};
-
-const JSErrorFormatString *GetErrorMessage(void *userRef, unsigned errorNumber);
 
 #define DBG(...)                                                                                   \
   printf("%s#%d: ", __func__, __LINE__);                                                           \
@@ -114,20 +105,12 @@ const JSErrorFormatString *GetErrorMessage(void *userRef, unsigned errorNumber);
 
 #define REQUEST_HANDLER_ONLY(name)                                                                 \
   if (isWizening()) {                                                                              \
-    JS_ReportErrorUTF8(cx,                                                                         \
-                       "%s can only be used during request handling, "                             \
-                       "not during initialization",                                                \
-                       name);                                                                      \
-    return false;                                                                                  \
+    return api::throw_error(cx, api::Errors::RequestHandlerOnly, name);                            \
   }
 
 #define INIT_ONLY(name)                                                                            \
   if (hasWizeningFinished()) {                                                                     \
-    JS_ReportErrorUTF8(cx,                                                                         \
-                       "%s can only be used during initialization, "                               \
-                       "not during request handling",                                              \
-                       name);                                                                      \
-    return false;                                                                                  \
+    return api::throw_error(cx, api::Errors::InitializationOnly, name);                            \
   }
 
 inline bool ThrowIfNotConstructing(JSContext *cx, const CallArgs &args, const char *builtinName) {
@@ -135,8 +118,7 @@ inline bool ThrowIfNotConstructing(JSContext *cx, const CallArgs &args, const ch
     return true;
   }
 
-  JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr, JSMSG_BUILTIN_CTOR_NO_NEW, builtinName);
-  return false;
+  return api::throw_error(cx, api::Errors::CtorCalledWithoutNew, builtinName);
 }
 namespace builtins {
 
@@ -178,9 +160,7 @@ public:
 
   static bool check_receiver(JSContext *cx, HandleValue receiver, const char *method_name) {
     if (!Impl::is_instance(receiver)) {
-      JS_ReportErrorNumberASCII(cx, GetErrorMessage, nullptr, JSMSG_INCOMPATIBLE_INSTANCE,
-                                method_name, Impl::class_.name);
-      return false;
+      return api::throw_error(cx, api::Errors::WrongReceiver, method_name, Impl::class_name);
     }
 
     return true;
@@ -204,8 +184,7 @@ public:
 
   static bool constructor(JSContext *cx, [[maybe_unused]] unsigned argc,
                           [[maybe_unused]] Value *vp) {
-    JS_ReportErrorUTF8(cx, "%s can't be instantiated directly", Impl::class_name);
-    return false;
+    return api::throw_error(cx, api::Errors::NoCtorBuiltin, Impl::class_name);
   }
 
   static bool init_class(JSContext *cx, HandleObject global) {

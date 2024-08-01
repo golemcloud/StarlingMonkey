@@ -1,6 +1,7 @@
 #include "headers.h"
 #include "encode.h"
 #include "decode.h"
+#include "fetch-errors.h"
 #include "sequence.hpp"
 
 #include "js/Conversions.h"
@@ -81,7 +82,7 @@ host_api::HostString normalize_header_name(JSContext *cx, HandleValue name_val, 
   }
 
   if (name.len == 0) {
-    JS_ReportErrorASCII(cx, "%s: Header name can't be empty", fun_name);
+    api::throw_error(cx, FetchErrors::EmptyHeaderName, fun_name);
     return nullptr;
   }
 
@@ -89,7 +90,7 @@ host_api::HostString normalize_header_name(JSContext *cx, HandleValue name_val, 
   for (size_t i = 0; i < name.len; i++) {
     const unsigned char ch = name_chars[i];
     if (ch > 127 || !VALID_NAME_CHARS[ch]) {
-      JS_ReportErrorUTF8(cx, "%s: Invalid header name '%s'", fun_name, name_chars);
+      api::throw_error(cx, FetchErrors::InvalidHeaderName, fun_name, name_chars);
       return nullptr;
     }
 
@@ -153,7 +154,7 @@ host_api::HostString normalize_header_value(JSContext *cx, HandleValue value_val
   for (size_t i = start; i < end; i++) {
     unsigned char ch = value_chars[i];
     if (ch == '\r' || ch == '\n' || ch == '\0') {
-      JS_ReportErrorUTF8(cx, "%s: Invalid header value '%s'", fun_name, value_chars);
+      api::throw_error(cx, FetchErrors::InvalidHeaderValue, fun_name, value_chars);
       return nullptr;
     }
   }
@@ -188,7 +189,7 @@ bool retrieve_value_for_header_from_handle(JSContext *cx, JS::HandleObject self,
   RootedString res_str(cx);
   RootedString val_str(cx);
   for (auto &str : values.value()) {
-    val_str = JS_NewStringCopyUTF8N(cx, JS::UTF8Chars(str.ptr.get(), str.len));
+    val_str = JS_NewStringCopyN(cx, reinterpret_cast<char *>(str.ptr.get()), str.len);
     if (!val_str) {
       return false;
     }
@@ -282,18 +283,12 @@ static bool switch_mode(JSContext* cx, HandleObject self, const Headers::Mode mo
   }
 
   if (current_mode == Headers::Mode::Uninitialized) {
-    if (mode == Headers::Mode::ContentOnly) {
-      RootedObject map(cx, JS::NewMapObject(cx));
-      if (!map) {
-        return false;
-      }
-      SetReservedSlot(self, static_cast<size_t>(Headers::Slots::Entries), ObjectValue(*map));
-    } else {
-      MOZ_ASSERT(mode == Headers::Mode::HostOnly);
-      auto handle = new host_api::HttpHeaders(Headers::guard(self));
-      SetReservedSlot(self, static_cast<size_t>(Headers::Slots::Handle), PrivateValue(handle));
+    MOZ_ASSERT(mode == Headers::Mode::ContentOnly);
+    RootedObject map(cx, JS::NewMapObject(cx));
+    if (!map) {
+      return false;
     }
-
+    SetReservedSlot(self, static_cast<size_t>(Headers::Slots::Entries), ObjectValue(*map));
     SetReservedSlot(self, static_cast<size_t>(Headers::Slots::Mode), JS::Int32Value(static_cast<int32_t>(mode)));
     return true;
   }
@@ -353,8 +348,7 @@ static bool switch_mode(JSContext* cx, HandleObject self, const Headers::Mode mo
 
     auto handle = host_api::HttpHeaders::FromEntries(Headers::guard(self), string_entries);
     if (handle.is_err()) {
-      JS_ReportErrorASCII(cx, "Failed to clone headers");
-      return false;
+      return api::throw_error(cx, FetchErrors::HeadersCloningFailed);
     }
     SetReservedSlot(self, static_cast<size_t>(Headers::Slots::Handle),
                     PrivateValue(handle.unwrap()));
@@ -403,8 +397,6 @@ static bool switch_mode(JSContext* cx, HandleObject self, const Headers::Mode mo
     auto handle = get_handle(self);
     delete handle;
     SetReservedSlot(self, static_cast<size_t>(Headers::Slots::Handle), PrivateValue(nullptr));
-    SetReservedSlot(self, static_cast<size_t>(Headers::Slots::Mode),
-                    JS::Int32Value(static_cast<int32_t>(Headers::Mode::CachedInContent)));
   }
 
   SetReservedSlot(self, static_cast<size_t>(Headers::Slots::Mode),
@@ -419,8 +411,7 @@ bool prepare_for_entries_modification(JSContext* cx, JS::HandleObject self) {
     if (!handle->is_writable()) {
       auto new_handle = handle->clone(Headers::guard(self));
       if (!new_handle) {
-        JS_ReportErrorASCII(cx, "Failed to clone headers");
-        return false;
+        return api::throw_error(cx, FetchErrors::HeadersCloningFailed);
       }
       delete handle;
       SetReservedSlot(self, static_cast<size_t>(Headers::Slots::Handle), PrivateValue(new_handle));
@@ -520,14 +511,6 @@ bool Headers::append_header_value(JSContext *cx, JS::HandleObject self, JS::Hand
   return true;
 }
 
-void init_from_handle(JSObject* self, host_api::HttpHeadersReadOnly* handle) {
-  MOZ_ASSERT(Headers::is_instance(self));
-  MOZ_ASSERT(Headers::mode(self) == Headers::Mode::Uninitialized);
-  SetReservedSlot(self, static_cast<uint32_t>(Headers::Slots::Mode),
-                  JS::Int32Value(static_cast<int32_t>(Headers::Mode::HostOnly)));
-  SetReservedSlot(self, static_cast<uint32_t>(Headers::Slots::Handle), PrivateValue(handle));
-}
-
 JSObject *Headers::create(JSContext *cx, host_api::HttpHeadersGuard guard) {
   JSObject* self = JS_NewObjectWithGivenProto(cx, &class_, proto_obj);
   if (!self) {
@@ -547,7 +530,10 @@ JSObject *Headers::create(JSContext *cx, host_api::HttpHeadersReadOnly *handle, 
     return nullptr;
   }
 
-  init_from_handle(self, handle);
+  MOZ_ASSERT(Headers::mode(self) == Headers::Mode::Uninitialized);
+  SetReservedSlot(self, static_cast<uint32_t>(Headers::Slots::Mode),
+                  JS::Int32Value(static_cast<int32_t>(Headers::Mode::HostOnly)));
+  SetReservedSlot(self, static_cast<uint32_t>(Headers::Slots::Handle), PrivateValue(handle));
   return self;
 }
 
@@ -556,24 +542,28 @@ JSObject *Headers::create(JSContext *cx, HandleValue init_headers, host_api::Htt
   if (!self) {
     return nullptr;
   }
-  return init_entries(cx, self, init_headers);
+  if (!init_entries(cx, self, init_headers)) {
+    return nullptr;
+  }
+  MOZ_ASSERT(mode(self) == Headers::Mode::ContentOnly || mode(self) == Headers::Mode::Uninitialized);
+  return self;
 }
 
-JSObject *Headers::init_entries(JSContext *cx, HandleObject self, HandleValue initv) {
+bool Headers::init_entries(JSContext *cx, HandleObject self, HandleValue initv) {
   // TODO: check if initv is a Headers instance and clone its handle if so.
   // TODO: But note: forbidden headers have to be applied correctly.
   bool consumed = false;
   if (!core::maybe_consume_sequence_or_record<append_header_value>(cx, initv, self,
                                                                    &consumed, "Headers")) {
-    return nullptr;
+    return false;
   }
 
   if (!consumed) {
-    core::report_sequence_or_record_arg_error(cx, "Headers", "");
-    return nullptr;
+    api::throw_error(cx, api::Errors::InvalidSequence, "Headers", "");
+    return false;
   }
 
-  return self;
+  return true;
 }
 
 bool Headers::get(JSContext *cx, unsigned argc, JS::Value *vp) {
@@ -792,9 +782,7 @@ bool Headers::forEach(JSContext *cx, unsigned argc, JS::Value *vp) {
   HEADERS_ITERATION_METHOD(1)
 
   if (!args[0].isObject() || !JS::IsCallable(&args[0].toObject())) {
-    JS_ReportErrorASCII(cx, "Failed to execute 'forEach' on 'Headers': "
-                            "parameter 1 is not of type 'Function'");
-    return false;
+    return api::throw_error(cx, api::Errors::ForEachCallback, "Headers");
   }
 
   JS::RootedValueArray<3> newArgs(cx);
@@ -882,12 +870,10 @@ bool Headers::constructor(JSContext *cx, unsigned argc, JS::Value *vp) {
   }
   SetReservedSlot(headersInstance, static_cast<uint32_t>(Slots::Guard),
                   JS::Int32Value(static_cast<int32_t>(host_api::HttpHeadersGuard::None)));
-  JS::RootedObject headers(cx, init_entries(cx, headersInstance, headersInit));
-  if (!headers) {
+  if (!init_entries(cx, headersInstance, headersInit)) {
     return false;
   }
-
-  args.rval().setObject(*headers);
+  args.rval().setObject(*headersInstance);
   return true;
 }
 
@@ -939,7 +925,7 @@ unique_ptr<host_api::HttpHeaders> Headers::handle_clone(JSContext* cx, HandleObj
 
   auto handle = unique_ptr<host_api::HttpHeaders>(get_handle(self)->clone(guard(self)));
   if (!handle) {
-    JS_ReportErrorASCII(cx, "Failed to clone headers");
+    api::throw_error(cx, FetchErrors::HeadersCloningFailed);
     return nullptr;
   }
   return handle;
