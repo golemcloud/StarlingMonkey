@@ -988,6 +988,12 @@ bool reader_for_outgoing_body_catch_handler(JSContext *cx, JS::HandleObject body
   fprintf(stderr, "Warning: body ReadableStream closed during body streaming. Exception: ");
   ENGINE->dump_value(args.get(0), stderr);
 
+  // The only response we ever send is the one passed to
+  // `FetchEvent#respondWith` to send to the client. As such, we can be certain
+  // that if we have a response here, we can advance the FetchState to
+  // `responseDone`. (Note that even though we encountered an error,
+  // `responseDone` is the right state: `respondedWithError` is for when sending
+  // a response at all failed.)
   return finish_outgoing_body_streaming(cx, body_owner);
 }
 
