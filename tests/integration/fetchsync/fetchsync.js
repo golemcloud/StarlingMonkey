@@ -44,6 +44,7 @@ export const handler = serveTest(async (t) => {
 });
 
 function testGetJsonArray(url, length) {
+    console.log(`testGetJsonArray: ${url}, ${length}`);
     let result = syncGetJson(url);
     assert(result != null, 'result is not nullish');
     assert(result['length'] === length, `length == ${length}`);
@@ -51,6 +52,7 @@ function testGetJsonArray(url, length) {
 }
 
 function testGetTextArray(url, length) {
+    console.log(`testGetTextArray: ${url}, ${length}`);
     let textResult = syncGetText(url);
     let result = JSON.parse(textResult);
     assert(result != null, 'result is not nullish');
@@ -59,6 +61,7 @@ function testGetTextArray(url, length) {
 }
 
 function testPatchJson(url, body) {
+    console.log(`testPatchJson: ${url}, ${body}`);
     let result = syncPatchJson(url, body);
     for (let key of Object.keys(body)) {
         assert(result[key] != null, `result[${key}] is not nullish`);
@@ -67,6 +70,7 @@ function testPatchJson(url, body) {
 }
 
 function testPatchText(url, body) {
+    console.log(`testPatchText: ${url}, ${body}`);
     let textResult = syncPatchText(url, body);
     let result = JSON.parse(textResult);
     for (let key of Object.keys(body)) {
