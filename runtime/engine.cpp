@@ -479,12 +479,12 @@ bool api::Engine::run_event_loop_until_interest() {
   return core::EventLoop::run_event_loop_until_interest(this, 0);
 }
 
-void api::Engine::incr_event_loop_interest(const char *const debug) {
-  return core::EventLoop::incr_event_loop_interest(debug);
+void api::Engine::incr_event_loop_interest() {
+  return core::EventLoop::incr_event_loop_interest();
 }
 
-void api::Engine::decr_event_loop_interest(const char *const debug) {
-  return core::EventLoop::decr_event_loop_interest(debug);
+void api::Engine::decr_event_loop_interest() {
+  return core::EventLoop::decr_event_loop_interest();
 }
 
 bool api::Engine::dump_value(JS::Value val, FILE *fp) { return ::dump_value(CONTEXT, val, fp); }
@@ -503,6 +503,6 @@ bool api::Engine::debug_logging_enabled() { return ::debug_logging_enabled(); }
 bool api::Engine::has_pending_async_tasks() { return core::EventLoop::has_pending_async_tasks(); }
 
 void api::Engine::queue_async_task(AsyncTask *task) { core::EventLoop::queue_async_task(task); }
-bool api::Engine::cancel_async_task(int32_t id) {
-  return core::EventLoop::cancel_async_task(this, id);
+bool api::Engine::cancel_async_task(AsyncTask *task) {
+  return core::EventLoop::cancel_async_task(this, task);
 }

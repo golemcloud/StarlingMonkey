@@ -6,15 +6,34 @@
 #include <host_api.h>
 #include <iostream>
 #include <list>
+#include <map>
 #include <vector>
 
 #define S_TO_NS(s) ((s) * 1000000000)
 #define NS_TO_MS(ns) ((ns) / 1000000)
 
+namespace {
+
+class TimersMap {
+public:
+  std::map<int32_t, api::AsyncTask*> timers_ = {};
+  int32_t next_timer_id = 1;
+  void trace(JSTracer *trc) {
+    for (auto& [id, timer] : timers_) {
+      timer->trace(trc);
+    }
+  }
+};
+
+}
+
+static PersistentRooted<js::UniquePtr<TimersMap>> TIMERS_MAP;
 static api::Engine *ENGINE;
 
 class TimerTask final : public api::AsyncTask {
   using TimerArgumentsVector = std::vector<JS::Heap<JS::Value>>;
+
+  int32_t timer_id_;
   int64_t delay_;
   int64_t deadline_;
   bool repeat_;
@@ -34,6 +53,8 @@ public:
     }
 
     handle_ = host_api::MonotonicClock::subscribe(deadline_, true);
+    timer_id_ = TIMERS_MAP->next_timer_id++;
+    TIMERS_MAP->timers_.emplace(timer_id_, this);
   }
 
   [[nodiscard]] bool run(api::Engine *engine) override {
@@ -55,17 +76,40 @@ public:
       return false;
     }
 
-    if (repeat_) {
-      engine->queue_async_task(new TimerTask(delay_, true, callback, argv));
+    // The task might've been canceled during the callback.
+    if (handle_ != INVALID_POLLABLE_HANDLE) {
+      host_api::MonotonicClock::unsubscribe(handle_);
     }
 
-    return cancel(engine);
+    if (TIMERS_MAP->timers_.contains(timer_id_)) {
+      if (repeat_) {
+        deadline_ = host_api::MonotonicClock::now() + delay_;
+        handle_ = host_api::MonotonicClock::subscribe(deadline_, true);
+        engine->queue_async_task(this);
+      } else {
+        TIMERS_MAP->timers_.erase(timer_id_);
+      }
+    }
+
+    return true;
   }
 
   [[nodiscard]] bool cancel(api::Engine *engine) override {
+    if (!TIMERS_MAP->timers_.contains(timer_id_)) {
+      return false;
+    }
+
     host_api::MonotonicClock::unsubscribe(id());
     handle_ = -1;
     return true;
+  }
+
+  [[nodiscard]] uint64_t deadline() override {
+    return deadline_;
+  }
+
+  [[nodiscard]] int32_t timer_id() const {
+    return timer_id_;
   }
 
   void trace(JSTracer *trc) override {
@@ -73,6 +117,16 @@ public:
     for (auto &arg : arguments_) {
       TraceEdge(trc, &arg, "Timer callback arguments");
     }
+  }
+
+  static bool clear(int32_t timer_id) {
+    if (!TIMERS_MAP->timers_.contains(timer_id)) {
+      return false;
+    }
+
+    ENGINE->cancel_async_task(TIMERS_MAP->timers_[timer_id]);
+    TIMERS_MAP->timers_.erase(timer_id);
+    return true;
   }
 };
 
@@ -91,9 +145,8 @@ template <bool repeat> bool setTimeout_or_interval(JSContext *cx, const unsigned
   }
 
   if (!(args[0].isObject() && JS::IsCallable(&args[0].toObject()))) {
-    JS_ReportErrorASCII(cx, "First argument to %s must be a function",
-                        repeat ? "setInterval" : "setTimeout");
-    return false;
+    return api::throw_error(cx, api::Errors::TypeError, repeat ? "setInterval" : "setTimeout",
+      "first argument", "be a function");
   }
   const RootedObject handler(cx, &args[0].toObject());
 
@@ -119,7 +172,7 @@ template <bool repeat> bool setTimeout_or_interval(JSContext *cx, const unsigned
 
   const auto timer = new TimerTask(delay, repeat, handler, handler_args);
   ENGINE->queue_async_task(timer);
-  args.rval().setInt32(timer->id());
+  args.rval().setInt32(timer->timer_id());
 
   return true;
 }
@@ -130,7 +183,6 @@ template <bool repeat> bool setTimeout_or_interval(JSContext *cx, const unsigned
  * https://html.spec.whatwg.org/multipage/timers-and-user-prompts.html#dom-clearinterval
  */
 template <bool interval> bool clearTimeout_or_interval(JSContext *cx, unsigned argc, Value *vp) {
-  REQUEST_HANDLER_ONLY(interval ? "clearInterval" : "clearTimeout");
   const CallArgs args = CallArgsFromVp(argc, vp);
   if (!args.requireAtLeast(cx, interval ? "clearInterval" : "clearTimeout", 1)) {
     return false;
@@ -141,7 +193,7 @@ template <bool interval> bool clearTimeout_or_interval(JSContext *cx, unsigned a
     return false;
   }
 
-  ENGINE->cancel_async_task(id);
+  TimerTask::clear(id);
 
   args.rval().setUndefined();
   return true;
@@ -155,6 +207,7 @@ constexpr JSFunctionSpec methods[] = {
 
 bool install(api::Engine *engine) {
   ENGINE = engine;
+  TIMERS_MAP.init(engine->cx(), js::MakeUnique<TimersMap>());
   return JS_DefineFunctions(engine->cx(), engine->global(), methods);
 }
 

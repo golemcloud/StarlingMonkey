@@ -1,18 +1,21 @@
 #include "base64.h"
 #include "mozilla/Try.h"
+#include "builtin.h"
+
+DEF_ERR(InvalidCharacterError, JSEXN_RANGEERR, "String contains an invalid character", 0)
 
 namespace builtins {
 namespace web {
 namespace base64 {
 
-JS::Result<std::string> convertJSValueToByteString(JSContext *cx, JS::Handle<JS::Value> v) {
+JS::Result<std::string> valueToJSByteString(JSContext *cx, JS::Handle<JS::Value> v) {
   JS::RootedString s(cx);
   if (v.isString()) {
     s = v.toString();
   } else {
     s = JS::ToString(cx, v);
     if (!s) {
-      JS_ReportErrorNumberUTF8(cx, GetErrorMessage, nullptr, JSMSG_INVALID_CHARACTER_ERROR);
+      api::throw_error(cx, InvalidCharacterError);
       return JS::Result<std::string>(JS::Error());
     }
   }
@@ -20,35 +23,33 @@ JS::Result<std::string> convertJSValueToByteString(JSContext *cx, JS::Handle<JS:
   // Conversion from JavaScript string to ByteString is only valid if all
   // characters < 256. This is always the case for Latin1 strings.
   size_t length;
+  UniqueChars result = nullptr;
   if (!JS::StringHasLatin1Chars(s)) {
-    // Creating an exception can GC, so we first scan the string for bad chars
-    // and report the error outside the AutoCheckCannotGC scope.
-    bool foundBadChar = false;
-    {
-      JS::AutoCheckCannotGC nogc;
-      const char16_t *chars = JS_GetTwoByteStringCharsAndLength(cx, nogc, s, &length);
-      if (!chars) {
-        JS_ReportErrorNumberUTF8(cx, GetErrorMessage, nullptr, JSMSG_INVALID_CHARACTER_ERROR);
-        return JS::Result<std::string>(JS::Error());
-      }
-
-      for (size_t i = 0; i < length; i++) {
-        if (chars[i] > 255) {
-          foundBadChar = true;
-          break;
-        }
-      }
-    }
-
-    if (foundBadChar) {
-      JS_ReportErrorNumberUTF8(cx, GetErrorMessage, nullptr, JSMSG_INVALID_CHARACTER_ERROR);
+    JS::AutoCheckCannotGC nogc(cx);
+    const char16_t *chars = JS_GetTwoByteStringCharsAndLength(cx, nogc, s, &length);
+    if (!chars) {
+      // Reset the nogc guard, since otherwise we can't throw errors.
+      nogc.reset();
+      api::throw_error(cx, InvalidCharacterError);
       return JS::Result<std::string>(JS::Error());
     }
+
+    for (size_t i = 0; i < length; i++) {
+      if (chars[i] > 255) {
+        // Reset the nogc guard, since otherwise we can't throw errors.
+        nogc.reset();
+        api::throw_error(cx, InvalidCharacterError);
+        return JS::Result<std::string>(JS::Error());
+      }
+    }
+    auto latin1_z =
+        JS::LossyTwoByteCharsToNewLatin1CharsZ(cx, chars, length);
+    result = UniqueChars(reinterpret_cast<char*>(latin1_z.get()));
   } else {
     length = JS::GetStringLength(s);
+    result = JS_EncodeStringToLatin1(cx, s);
   }
 
-  UniqueChars result = JS_EncodeStringToLatin1(cx, s);
   if (!result) {
     return JS::Result<std::string>(JS::Error());
   }
@@ -56,10 +57,10 @@ JS::Result<std::string> convertJSValueToByteString(JSContext *cx, JS::Handle<JS:
   return byteString;
 }
 
-JS::Result<std::string> convertJSValueToByteString(JSContext *cx, std::string v) {
+JS::Result<std::string> stringToJSByteString(JSContext *cx, std::string v) {
   JS::RootedValue s(cx);
   s.setString(JS_NewStringCopyN(cx, v.c_str(), v.length()));
-  return convertJSValueToByteString(cx, s);
+  return valueToJSByteString(cx, s);
 }
 
 // Maps an encoded character to a value in the Base64 alphabet, per
@@ -297,7 +298,7 @@ bool atob(JSContext *cx, unsigned argc, Value *vp) {
   if (!args.requireAtLeast(cx, "atob", 1)) {
     return false;
   }
-  auto dataResult = convertJSValueToByteString(cx, args.get(0));
+  auto dataResult = valueToJSByteString(cx, args.get(0));
   if (dataResult.isErr()) {
     return false;
   }
@@ -309,8 +310,7 @@ bool atob(JSContext *cx, unsigned argc, Value *vp) {
   // 2. If decodedData is failure, then throw an "InvalidCharacterError"
   // DOMException.
   if (decoded_result.isErr()) {
-    JS_ReportErrorNumberUTF8(cx, GetErrorMessage, nullptr, JSMSG_INVALID_CHARACTER_ERROR);
-    return false;
+    return api::throw_error(cx, InvalidCharacterError);
   }
   auto decoded = decoded_result.unwrap();
   RootedString decodedData(cx, JS_NewStringCopyN(cx, decoded.c_str(), decoded.length()));
@@ -407,7 +407,7 @@ bool btoa(JSContext *cx, unsigned argc, Value *vp) {
   // Note: We do not check if data contains any character whose code point is
   // greater than U+00FF before calling convertJSValueToByteString as
   // convertJSValueToByteString does the same check
-  auto byteStringResult = convertJSValueToByteString(cx, data);
+  auto byteStringResult = valueToJSByteString(cx, data);
   if (byteStringResult.isErr()) {
     return false;
   }
@@ -417,9 +417,7 @@ bool btoa(JSContext *cx, unsigned argc, Value *vp) {
 
   JSString *str = JS_NewStringCopyN(cx, result.c_str(), result.length());
   if (!str) {
-    JS_ReportErrorNumberUTF8(cx, GetErrorMessage, nullptr, JSMSG_INVALID_CHARACTER_ERROR);
-
-    return false;
+    return api::throw_error(cx, InvalidCharacterError);
   }
 
   out.setString(str);

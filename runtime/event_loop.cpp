@@ -24,15 +24,17 @@ static PersistentRooted<TaskQueue> queue;
 
 namespace core {
 
-void EventLoop::queue_async_task(api::AsyncTask *task) { queue.get().tasks.emplace_back(task); }
+void EventLoop::queue_async_task(api::AsyncTask *task) {
+  MOZ_ASSERT(task);
+  queue.get().tasks.emplace_back(task);
+}
 
-bool EventLoop::cancel_async_task(api::Engine *engine, const int32_t id) {
+bool EventLoop::cancel_async_task(api::Engine *engine, api::AsyncTask *task) {
   const auto tasks = &queue.get().tasks;
   for (auto it = tasks->begin(); it != tasks->end(); ++it) {
-    const auto task = *it;
-    if (task->id() == id) {
-      task->cancel(engine);
+    if (*it == task) {
       tasks->erase(it);
+      task->cancel(engine);
       return true;
     }
   }
@@ -41,15 +43,11 @@ bool EventLoop::cancel_async_task(api::Engine *engine, const int32_t id) {
 
 bool EventLoop::has_pending_async_tasks() { return !queue.get().tasks.empty(); }
 
-void EventLoop::incr_event_loop_interest(const char *const debug) {
-  queue.get().interest_cnt++;
-  LOG("EventLoop::incr_event_loop_interest: %s, %d", debug, queue.get().interest_cnt);
-}
+void EventLoop::incr_event_loop_interest() { queue.get().interest_cnt++; }
 
-void EventLoop::decr_event_loop_interest(const char *const debug) {
+void EventLoop::decr_event_loop_interest() {
   MOZ_ASSERT(queue.get().interest_cnt > 0);
   queue.get().interest_cnt--;
-  LOG("EventLoop::decr_event_loop_interest: %s %d", debug, queue.get().interest_cnt);
 }
 
 inline bool interest_complete() { return queue.get().interest_cnt == 0; }
@@ -91,7 +89,7 @@ bool EventLoop::run_event_loop(api::Engine *engine, double total_compute) {
       }
       exit_event_loop();
       fprintf(stderr, "event loop error - both task and job queues are empty, but expected "
-                      "operations did not resolve\n");
+                      "operations did not resolve");
       return false;
     }
 
@@ -101,18 +99,18 @@ bool EventLoop::run_event_loop(api::Engine *engine, double total_compute) {
     if (interest_complete()) {
       // Perform a non-blocking select in the case of there being no event loop interest
       // (we are thus only performing a "single tick", but must still progress work that is ready)
-      std::optional<size_t> maybe_task_idx = api::AsyncTask::ready(tasks);
+      std::optional<size_t> maybe_task_idx = api::AsyncTask::ready(*tasks);
       if (!maybe_task_idx.has_value()) {
         break;
       }
       task_idx = maybe_task_idx.value();
     } else {
-      task_idx = api::AsyncTask::select(tasks);
+      task_idx = api::AsyncTask::select(*tasks);
     }
 
     auto task = tasks->at(task_idx);
-    bool success = task->run(engine);
     tasks->erase(tasks->begin() + task_idx);
+    bool success = task->run(engine);
     if (!success) {
       exit_event_loop();
       return false;

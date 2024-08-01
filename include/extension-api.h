@@ -33,6 +33,7 @@ class AsyncTask;
 
 class Engine {
 
+
 public:
   Engine();
   JSContext *cx();
@@ -94,13 +95,13 @@ public:
   /**
    * Add an event loop interest to track
    */
-  void incr_event_loop_interest(const char *const debug);
+  void incr_event_loop_interest();
 
   /**
    * Remove an event loop interest to track
    * The last decrementer marks the event loop as complete to finish
    */
-  void decr_event_loop_interest(const char *const debug);
+  void decr_event_loop_interest();
 
   /**
    * Get the JS value associated with the top-level script execution -
@@ -110,7 +111,7 @@ public:
 
   bool has_pending_async_tasks();
   void queue_async_task(AsyncTask *task);
-  bool cancel_async_task(int32_t id);
+  bool cancel_async_task(AsyncTask *task);
 
   void abort(const char *reason);
 
@@ -140,17 +141,21 @@ public:
     return handle_;
   }
 
+  [[nodiscard]] virtual uint64_t deadline() {
+    return 0;
+  }
+
   virtual void trace(JSTracer *trc) = 0;
 
   /**
    * Select for the next available ready task, providing the oldest ready first.
    */
-  static size_t select(std::vector<AsyncTask *> *handles);
+  static size_t select(std::vector<AsyncTask *> &handles);
 
   /**
    * Non-blocking check for a ready task, providing the oldest ready first, if any.
    */
-  static std::optional<size_t> ready(std::vector<AsyncTask *> *handles);
+  static std::optional<size_t> ready(std::vector<AsyncTask *> &handles);
 };
 
 } // namespace api

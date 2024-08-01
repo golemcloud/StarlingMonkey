@@ -26,13 +26,12 @@ bool fetch(JSContext *cx, unsigned argc, Value *vp) {
     return ReturnPromiseRejectedWithPendingError(cx, args);
   }
 
-  RootedObject request_obj(
-      cx, JS_NewObjectWithGivenProto(cx, &Request::class_, Request::proto_obj));
+  RootedObject request_obj(cx, Request::create(cx));
   if (!request_obj) {
     return ReturnPromiseRejectedWithPendingError(cx, args);
   }
 
-  if (!Request::create(cx, request_obj, args[0], args.get(1))) {
+  if (!Request::initialize(cx, request_obj, args[0], args.get(1))) {
     return ReturnPromiseRejectedWithPendingError(cx, args);
   }
 
@@ -69,7 +68,7 @@ bool fetch(JSContext *cx, unsigned argc, Value *vp) {
     return ReturnPromiseRejectedWithPendingError(cx, args);
 
   bool streaming = false;
-  if (!RequestOrResponse::maybe_stream_body(cx, request_obj, &streaming)) {
+  if (!RequestOrResponse::maybe_stream_body(cx, request_obj, request, &streaming)) {
     return false;
   }
   if (streaming) {
@@ -91,7 +90,6 @@ bool fetch(JSContext *cx, unsigned argc, Value *vp) {
   // If the request body is streamed, we need to wait for streaming to complete
   // before marking the request as pending.
   if (!streaming) {
-    ENGINE->incr_event_loop_interest("fetch: not streaming");
     ENGINE->queue_async_task(new ResponseFutureTask(request_obj, pending_handle));
   }
 
@@ -104,19 +102,13 @@ bool fetch(JSContext *cx, unsigned argc, Value *vp) {
   return true;
 }
 
-bool runEventLoopUntilInterest(JSContext *cx, unsigned argc, Value *vp) {
-  ENGINE->run_event_loop_until_interest();
-  return true;
-}
-
-bool runEventLoop(JSContext *cx, unsigned argc, Value *vp) {
-  ENGINE->run_event_loop();
-  return true;
+bool run_event_loop_until_interest(JSContext *cx, unsigned argc, Value *vp) {
+  return ENGINE->run_event_loop_until_interest();
 }
 
 const JSFunctionSpec methods[] = {
     JS_FN("fetch", fetch, 2, JSPROP_ENUMERATE),
-    JS_FN("runEventLoopUntilInterest", runEventLoopUntilInterest, 0, JSPROP_ENUMERATE),
+    JS_FN("runEventLoopUntilInterest", run_event_loop_until_interest, 0, JSPROP_ENUMERATE),
     JS_FS_END,
 };
 

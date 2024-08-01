@@ -3,6 +3,7 @@
 
 #include "headers.h"
 #include "host_api.h"
+#include "fetch-errors.h"
 
 namespace builtins {
 namespace web {
@@ -102,6 +103,7 @@ public:
    * to `true`.
    */
   static bool maybe_stream_body(JSContext *cx, JS::HandleObject body_owner,
+                                host_api::HttpOutgoingBodyOwner *destination,
                                 bool *requires_streaming);
 
   static JSObject *create_body_stream(JSContext *cx, JS::HandleObject owner);
@@ -155,11 +157,11 @@ public:
   static bool init_class(JSContext *cx, JS::HandleObject global);
   static bool constructor(JSContext *cx, unsigned argc, JS::Value *vp);
 
-  static JSObject *create(JSContext *cx, JS::HandleObject requestInstance);
-  static JSObject *create(JSContext *cx, JS::HandleObject requestInstance, JS::HandleValue input,
-                          JS::HandleValue init_val);
+  static JSObject *create(JSContext *cx);
+  static bool initialize(JSContext *cx, JS::HandleObject requestInstance, JS::HandleValue input,
+                         JS::HandleValue init_val);
 
-  static JSObject *create_instance(JSContext *cx);
+  static void init_slots(JSObject *requestInstance);
 };
 
 class Response final : public BuiltinImpl<Response> {
@@ -204,9 +206,9 @@ public:
   static bool init_class(JSContext *cx, JS::HandleObject global);
   static bool constructor(JSContext *cx, unsigned argc, JS::Value *vp);
 
-  static JSObject *create(JSContext *cx, JS::HandleObject response);
-  static JSObject* create_incoming(JSContext * cx, HandleObject self,
-                                                           host_api::HttpIncomingResponse* response);
+  static JSObject *create(JSContext *cx);
+  static JSObject *init_slots(HandleObject response);
+  static JSObject* create_incoming(JSContext * cx, host_api::HttpIncomingResponse* response);
 
   static host_api::HttpResponse *response_handle(JSObject *obj);
   static uint16_t status(JSObject *obj);
@@ -229,7 +231,6 @@ public:
 
   [[nodiscard]] bool run(api::Engine *engine) override {
     // MOZ_ASSERT(ready());
-    engine->decr_event_loop_interest("ResponseFutureTask::run");
     JSContext *cx = engine->cx();
 
     const RootedObject request(cx, request_);
@@ -237,20 +238,14 @@ public:
 
     auto res = future_->maybe_response();
     if (res.is_err()) {
-      JS_ReportErrorUTF8(cx, "NetworkError when attempting to fetch resource.");
+      api::throw_error(cx, FetchErrors::FetchNetworkError);
       return RejectPromiseWithPendingError(cx, response_promise);
     }
 
     auto maybe_response = res.unwrap();
     MOZ_ASSERT(maybe_response.has_value());
     auto response = maybe_response.value();
-    RootedObject response_obj(
-        cx, JS_NewObjectWithGivenProto(cx, &Response::class_, Response::proto_obj));
-    if (!response_obj) {
-      return false;
-    }
-
-    response_obj = Response::create_incoming(cx, response_obj, response);
+    RootedObject response_obj(cx, Response::create_incoming(cx, response));
     if (!response_obj) {
       return false;
     }

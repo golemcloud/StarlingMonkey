@@ -247,10 +247,10 @@ public:
   }
 };
 
-size_t api::AsyncTask::select(std::vector<AsyncTask *> *tasks) {
-  auto count = tasks->size();
+size_t api::AsyncTask::select(std::vector<AsyncTask *> &tasks) {
+  auto count = tasks.size();
   vector<WASIHandle<host_api::Pollable>::Borrowed> handles;
-  for (const auto task : *tasks) {
+  for (const auto task : tasks) {
     handles.emplace_back(task->id());
   }
   auto list = list_borrow_pollable_t{ handles.data(), count};
@@ -263,11 +263,12 @@ size_t api::AsyncTask::select(std::vector<AsyncTask *> *tasks) {
   return ready_index;
 }
 
-std::optional<size_t> api::AsyncTask::ready(std::vector<AsyncTask *> *tasks) {
-  auto count = tasks->size();
+std::optional<size_t> api::AsyncTask::ready(std::vector<api::AsyncTask *> &tasks) {
+  auto count = tasks.size();
   for (size_t idx = 0; idx < count; ++idx) {
-    auto task = tasks->at(idx);
-    if (wasi_io_0_2_0_poll_method_pollable_ready({task->id()})) {
+    auto task = tasks.at(idx);
+    WASIHandle<host_api::Pollable>::Borrowed poll = { task->id() };
+    if (wasi_io_0_2_0_poll_method_pollable_ready(poll)) {
       return idx;
     }
   }
