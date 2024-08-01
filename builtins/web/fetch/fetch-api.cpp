@@ -102,13 +102,13 @@ bool fetch(JSContext *cx, unsigned argc, Value *vp) {
   return true;
 }
 
-bool runEventLoopUntilInterest(JSContext *cx, unsigned argc, Value *vp) {
+bool run_event_loop_until_interest(JSContext *cx, unsigned argc, Value *vp) {
   return ENGINE->run_event_loop_until_interest();
 }
 
 const JSFunctionSpec methods[] = {
     JS_FN("fetch", fetch, 2, JSPROP_ENUMERATE),
-    JS_FN("runEventLoopUntilInterest", runEventLoopUntilInterest, 0, JSPROP_ENUMERATE),
+    JS_FN("runEventLoopUntilInterest", run_event_loop_until_interest, 0, JSPROP_ENUMERATE),
     JS_FS_END,
 };
 
