@@ -1,5 +1,5 @@
 import {serveTest} from "../test-server.js";
-import {assert, strictEqual, throws, deepStrictEqual} from "../assert.js";
+import {assert, strictEqual, throws, deepStrictEqual} from "../../assert.js";
 
 export const handler = serveTest(async (t) => {
     t.test("fetch - json - small", () => {
